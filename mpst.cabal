@@ -1,0 +1,117 @@
+cabal-version: 2.2
+
+-- This file has been generated from package.yaml by hpack version 0.35.2.
+--
+-- see: https://github.com/sol/hpack
+
+name:           mpst
+version:        0.1.0.0
+synopsis:       Multiparty session types experiments
+category:       Concurrency
+author: Anonymous
+maintainer: Anonymous
+license:        BSD-3-Clause
+build-type:     Simple
+extra-source-files:
+    README.md
+
+library
+  exposed-modules:
+      MPST
+      Syntax
+      Automata
+      Balanced
+      DeadlockFreedom
+      Merge
+      MpstkBackend
+      Project
+      Safety
+      Subtyping
+      Synthesise
+      Typecheck
+      Infer
+      Liveness
+      Visualise
+      Benchmark.Catalogue
+      Benchmark.Size
+      Benchmark.Runner
+      Benchmark.LaTeX
+  other-modules:
+      Syntax.AST
+      Syntax.AlphaEq
+      Syntax.Parser
+      Syntax.Pretty
+      Syntax.WellFormed
+  hs-source-dirs:
+      src
+  build-depends:
+      array
+    , base >=4.14 && <5
+    , containers
+    , deepseq
+    , graphviz
+    , megaparsec
+    , mtl
+    , parser-combinators
+    , prettyprinter
+    , process
+    , temporary
+    , text
+    , time
+    , transformers
+  default-language: Haskell2010
+
+executable mpst-app
+  main-is: Main.hs
+  other-modules:
+      Paths_mpst
+  autogen-modules:
+      Paths_mpst
+  hs-source-dirs:
+      app
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      array
+    , base >=4.14 && <5
+    , containers
+    , deepseq
+    , graphviz
+    , megaparsec
+    , mpst
+    , mtl
+    , parser-combinators
+    , prettyprinter
+    , process
+    , temporary
+    , text
+    , time
+    , transformers
+  default-language: Haskell2010
+
+executable mpst-bench
+  main-is: Main.hs
+  other-modules:
+      Paths_mpst
+  autogen-modules:
+      Paths_mpst
+  hs-source-dirs:
+      bench
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      array
+    , base >=4.14 && <5
+    , containers
+    , deepseq
+    , graphviz
+    , megaparsec
+    , mpst
+    , mtl
+    , parser-combinators
+    , prettyprinter
+    , process
+    , temporary
+    , text
+    , time
+    , transformers
+  default-language: Haskell2010
+
