@@ -78,6 +78,7 @@ normalizeGlobalBranchOrder g =
        in case sorted of
             [] -> error "Syntax.AlphaEq: impossible empty global branch list"
             b0 : rest -> GMessage s r (b0 NE.:| rest)
+    GPayload s r pt cont -> GPayload s r pt (normalizeGlobalBranchOrder cont)
     GRec v body -> GRec v (normalizeGlobalBranchOrder body)
     GVar v -> GVar v
     GEnd -> GEnd
@@ -96,6 +97,8 @@ normalizeLocalBranchOrder t =
        in case sorted of
             [] -> error "Syntax.AlphaEq: impossible empty local recv branch list"
             b0 : rest -> LRecv p (b0 NE.:| rest)
+    LPayloadSend p pt cont -> LPayloadSend p pt (normalizeLocalBranchOrder cont)
+    LPayloadRecv p pt cont -> LPayloadRecv p pt (normalizeLocalBranchOrder cont)
     LRec v body -> LRec v (normalizeLocalBranchOrder body)
     LVar v -> LVar v
     LEnd -> LEnd

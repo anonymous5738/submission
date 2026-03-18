@@ -17,6 +17,7 @@ import Automata
   , LocalEdgeLabel(..)
   , LocalGraph(..)
   , LocalNode(..)
+  , LocalPayloadEdgeLabel(..)
   )
 import Control.DeepSeq (NFData)
 import Data.Array (assocs)
@@ -25,16 +26,19 @@ import GHC.Generics (Generic)
 import qualified Data.Graph as G
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
-import Syntax.AST (Label, Participant)
+import Syntax.AST (Label, Participant, PayloadType)
 
 type StatePair = (G.Vertex, G.Vertex)
 type Simulation = Set.Set StatePair
+
+data TransitionContent = TCLabel Label | TCPayload PayloadType
+  deriving (Eq, Ord, Show)
 
 data LocalTransition = LocalTransition
   { ltTo :: !G.Vertex
   , ltDirection :: LocalDirection
   , ltPeer :: Participant
-  , ltLabel :: Label
+  , ltContent :: TransitionContent
   }
   deriving (Eq, Ord, Show)
 
@@ -82,8 +86,8 @@ checkLocalSubtype left right =
   where
     leftNodes = Map.fromList (assocs (lgNodes left))
     rightNodes = Map.fromList (assocs (lgNodes right))
-    leftOutgoing = collectOutgoing (lgEdgeLabels left)
-    rightOutgoing = collectOutgoing (lgEdgeLabels right)
+    leftOutgoing = collectOutgoing (lgEdgeLabels left) (lgPayloadEdges left)
+    rightOutgoing = collectOutgoing (lgEdgeLabels right) (lgPayloadEdges right)
     initial = initialSimulation leftNodes rightNodes
     fixed = pruneToFixpoint leftNodes rightNodes leftOutgoing rightOutgoing initial
 
@@ -134,6 +138,8 @@ compatibleNodeKinds leftNode rightNode =
     (LocalEndNode, LocalEndNode) -> True
     (LocalSendNode p _, LocalSendNode q _) -> p == q
     (LocalRecvNode p _, LocalRecvNode q _) -> p == q
+    (LocalPayloadSendNode p pt, LocalPayloadSendNode q qt) -> p == q && pt == qt
+    (LocalPayloadRecvNode p pt, LocalPayloadRecvNode q qt) -> p == q && pt == qt
     _ -> False
 
 pruneToFixpoint ::
@@ -172,6 +178,10 @@ violatesSimulation leftNodes rightNodes leftOutgoing rightOutgoing sim (leftV, r
     (Just (LocalRecvNode _ _), Just (LocalRecvNode _ _)) ->
       -- Contravariant: every right recv must be matched by a left recv.
       not (allRightMatchedByLeft rightRecvs leftRecvs)
+    (Just (LocalPayloadSendNode _ _), Just (LocalPayloadSendNode _ _)) ->
+      not (allLeftMatchedByRight leftSends rightSends)
+    (Just (LocalPayloadRecvNode _ _), Just (LocalPayloadRecvNode _ _)) ->
+      not (allRightMatchedByLeft rightRecvs leftRecvs)
     _ ->
       True
   where
@@ -200,25 +210,28 @@ sameAction :: LocalTransition -> LocalTransition -> Bool
 sameAction lhs rhs =
   ltDirection lhs == ltDirection rhs
     && ltPeer lhs == ltPeer rhs
-    && ltLabel lhs == ltLabel rhs
+    && ltContent lhs == ltContent rhs
 
 collectOutgoing ::
   Map.Map G.Edge [LocalEdgeLabel] ->
+  Map.Map G.Edge [LocalPayloadEdgeLabel] ->
   Map.Map G.Vertex [LocalTransition]
-collectOutgoing =
-  Map.foldlWithKey'
-    (\acc (from, to) labels -> foldl' (addTransition from to) acc labels)
-    Map.empty
+collectOutgoing branchEdges payloadEdges =
+  let fromBranch = Map.foldlWithKey'
+        (\acc (from, to) labels -> foldl' (addBranch from to) acc labels)
+        Map.empty
+        branchEdges
+      fromPayload = Map.foldlWithKey'
+        (\acc (from, to) labels -> foldl' (addPayload from to) acc labels)
+        fromBranch
+        payloadEdges
+   in fromPayload
   where
-    addTransition from to acc label =
-      Map.insertWith
-        (++)
-        from
-        [ LocalTransition
-            { ltTo = to
-            , ltDirection = leDirection label
-            , ltPeer = lePeer label
-            , ltLabel = leLabel label
-            }
-        ]
+    addBranch from to acc label =
+      Map.insertWith (++) from
+        [LocalTransition to (leDirection label) (lePeer label) (TCLabel (leLabel label))]
+        acc
+    addPayload from to acc label =
+      Map.insertWith (++) from
+        [LocalTransition to (lpeDirection label) (lpePeer label) (TCPayload (lpePayload label))]
         acc

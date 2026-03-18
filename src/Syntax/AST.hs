@@ -5,6 +5,7 @@ module Syntax.AST
   ( Participant(..)
   , Label(..)
   , TypeVar(..)
+  , PayloadType(..)
   , Branches
   , GlobalType(..)
   , LocalType(..)
@@ -37,26 +38,35 @@ newtype TypeVar = TypeVar { getTypeVar :: String }
 
 instance NFData TypeVar
 
+-- | Payload types for value-passing messages.
+data PayloadType = PTInt | PTBool | PTUnit | PTString | PTFloat
+  deriving (Eq, Ord, Show, Generic)
+
+instance NFData PayloadType
+
 -- | A non-empty set of labelled continuations.
 type Branches t = NonEmpty (Label, t)
 
 -- | Global types describe whole-protocol behaviour.
 data GlobalType
-  = GMessage Participant Participant (Branches GlobalType) -- ^ p -> q {l1: G1, ..., ln: Gn}
-  | GVar TypeVar                                           -- ^ Type variable t
-  | GRec TypeVar GlobalType                                -- ^ rec t . G
-  | GEnd                                                   -- ^ end
+  = GMessage Participant Participant (Branches GlobalType)  -- ^ p -> q {l1: G1, ..., ln: Gn}
+  | GPayload Participant Participant PayloadType GlobalType -- ^ p -> q [t]; G
+  | GVar TypeVar                                            -- ^ Type variable t
+  | GRec TypeVar GlobalType                                 -- ^ rec t . G
+  | GEnd                                                    -- ^ end
   deriving (Eq, Show, Generic)
 
 instance NFData GlobalType
 
 -- | Local types describe a single participant's behaviour.
 data LocalType
-  = LSend Participant (Branches LocalType) -- ^ Internal choice: p ! {l1: T1, ..., ln: Tn}
-  | LRecv Participant (Branches LocalType) -- ^ External choice: p ? {l1: T1, ..., ln: Tn}
-  | LVar TypeVar                           -- ^ Type variable t
-  | LRec TypeVar LocalType                 -- ^ rec t . T
-  | LEnd                                   -- ^ end
+  = LSend Participant (Branches LocalType)        -- ^ Internal choice: p ! {l1: T1, ..., ln: Tn}
+  | LRecv Participant (Branches LocalType)        -- ^ External choice: p ? {l1: T1, ..., ln: Tn}
+  | LPayloadSend Participant PayloadType LocalType -- ^ Payload send: p ![t]; T
+  | LPayloadRecv Participant PayloadType LocalType -- ^ Payload recv: p ?[t]; T
+  | LVar TypeVar                                   -- ^ Type variable t
+  | LRec TypeVar LocalType                         -- ^ rec t . T
+  | LEnd                                           -- ^ end
   deriving (Eq, Show, Generic)
 
 instance NFData LocalType
@@ -68,6 +78,7 @@ data Expr
   | EVar String                  -- ^ Expression variable
   | EBinOp BinOp Expr Expr       -- ^ Binary operation
   | ENot Expr                    -- ^ Logical negation
+  | EUnit                        -- ^ Unit literal ()
   deriving (Eq, Show, Generic)
 
 instance NFData Expr
@@ -80,12 +91,14 @@ instance NFData BinOp
 
 -- | Process terms that implement a local type protocol.
 data Process
-  = PSend Participant Label Process        -- ^ p ! l . P
-  | PRecv Participant (Branches Process)   -- ^ p ? { l1: P1, ..., ln: Pn }
-  | PIf Expr Process Process               -- ^ if e then P else P
-  | PVar TypeVar                           -- ^ Process variable X
-  | PRec TypeVar Process                   -- ^ rec X . P
-  | PEnd                                   -- ^ Terminated process (0)
+  = PSend Participant Label Process          -- ^ p ! l . P
+  | PRecv Participant (Branches Process)     -- ^ p ? { l1: P1, ..., ln: Pn }
+  | PSendPayload Participant Expr Process    -- ^ p ! [e] . P
+  | PRecvPayload Participant String Process  -- ^ p ? (x) . P
+  | PIf Expr Process Process                 -- ^ if e then P else P
+  | PVar TypeVar                             -- ^ Process variable X
+  | PRec TypeVar Process                     -- ^ rec X . P
+  | PEnd                                     -- ^ Terminated process (0)
   deriving (Eq, Show, Generic)
 
 instance NFData Process
@@ -101,6 +114,10 @@ substituteVar target replacement = go
           LSend peer (fmap (\(lbl, cont) -> (lbl, go cont)) branches)
         LRecv peer branches ->
           LRecv peer (fmap (\(lbl, cont) -> (lbl, go cont)) branches)
+        LPayloadSend peer pt cont ->
+          LPayloadSend peer pt (go cont)
+        LPayloadRecv peer pt cont ->
+          LPayloadRecv peer pt (go cont)
         LVar tv
           | tv == target -> replacement
           | otherwise -> LVar tv

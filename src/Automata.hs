@@ -6,17 +6,21 @@ module Automata
   , GlobalNode(..)
   , RecVarHints(..)
   , GlobalEdgeLabel(..)
+  , GlobalPayloadEdgeLabel(..)
   , buildGlobalGraph
   , GraphToTypeError(..)
   , globalRecVarHints
   , globalGraphToType
+  , globalPayloadOutgoing
   , LocalGraph(..)
   , LocalNode(..)
   , LocalDirection(..)
   , LocalEdgeLabel(..)
+  , LocalPayloadEdgeLabel(..)
   , emptyRecVarHints
   , buildLocalGraph
   , localGraphToType
+  , localPayloadOutgoing
   , ContextGraph(..)
   , ContextState(..)
   , ContextEdgeLabel(..)
@@ -80,6 +84,7 @@ graphBounds builder
 -- | Node kind in a global automaton.
 data GlobalNode
   = GlobalNode
+  | GlobalPayloadNode
   | GlobalEndNode
   deriving (Eq, Show, Generic)
 
@@ -132,12 +137,23 @@ data GlobalEdgeLabel = GlobalEdgeLabel
 
 instance NFData GlobalEdgeLabel
 
+data GlobalPayloadEdgeLabel = GlobalPayloadEdgeLabel
+  { gpeSender :: Participant
+  , gpeReceiver :: Participant
+  , gpePayload :: PayloadType
+  , gpeTargetHints :: RecVarHints
+  }
+  deriving (Eq, Ord, Show, Generic)
+
+instance NFData GlobalPayloadEdgeLabel
+
 -- | Concrete graph representation for a global protocol type.
 data GlobalGraph = GlobalGraph
   { ggGraph :: G.Graph
   , ggStart :: G.Vertex
   , ggNodes :: G.Table GlobalNode
   , ggEdgeLabels :: Map.Map G.Edge [GlobalEdgeLabel]
+  , ggPayloadEdges :: Map.Map G.Edge [GlobalPayloadEdgeLabel]
   , ggStartVarHints :: RecVarHints
   }
   deriving (Eq, Show, Generic)
@@ -179,12 +195,12 @@ globalRecVarHints gg = normaliseHintMap combined
       foldl' addEdgeHints Map.empty (globalTransitions completed)
     combined = Map.unionWith (++) fromStart fromEdges
 
-    addEdgeHints acc (_, to, lbl) =
-      if not (hasAnyRecVarHints (geTargetHints lbl))
+    addEdgeHints acc (_, to, _, hints) =
+      if not (hasAnyRecVarHints hints)
         then acc
-        else Map.insertWith (++) to (recVarHintsToList (geTargetHints lbl)) acc
+        else Map.insertWith (++) to (recVarHintsToList hints) acc
 
-type TransitionId = (G.Vertex, G.Vertex, Label)
+type TransitionId = (G.Vertex, G.Vertex, Either Label PayloadType)
 
 data HintCompletionState = HintCompletionState
   { hcSeen :: Set.Set G.Vertex
@@ -197,13 +213,12 @@ data HintCompletionState = HintCompletionState
 
 completeGlobalHints :: GlobalGraph -> GlobalGraph
 completeGlobalHints gg =
-  gg
-    { ggStartVarHints = hcStartHints finalState
-    , ggEdgeLabels = applyTransitionHints gg (hcTransitionHints finalState)
-    }
+  applyTransitionHints
+    (gg { ggStartVarHints = hcStartHints finalState' })
+    (hcTransitionHints finalState')
   where
     transitions = globalTransitions gg
-    hintsByTransition = Map.fromList [((from, to, geLabel lbl), geTargetHints lbl) | (from, to, lbl) <- transitions]
+    hintsByTransition = Map.fromList [((from, to, content), hints) | (from, to, content, hints) <- transitions]
     adjacency = buildAdjacency transitions
     usedNames = allHintNames (ggStartVarHints gg) transitions
     initial =
@@ -216,6 +231,11 @@ completeGlobalHints gg =
         , hcTransitionHints = hintsByTransition
         }
     finalState = dfsComplete adjacency (ggStart gg) initial
+    -- Propagate binders to ALL non-self-loop edges targeting cyclic vertices.
+    -- The DFS only places binders on its discovery edges, but graphToType
+    -- explores all paths, so it can reach cyclic vertices via other edges.
+    cyclicVars = buildCyclicVarMap (ggStart gg) (hcStartHints finalState) (hcTransitionHints finalState) transitions
+    finalState' = propagateGlobalCyclicBinders (ggStart gg) transitions cyclicVars finalState
 
 dfsComplete ::
   Map.Map G.Vertex [(TransitionId, G.Vertex)] ->
@@ -245,21 +265,30 @@ ensureEntryHintForAncestor ancestor state =
   case Map.lookup ancestor (hcPathEntry state) of
     Nothing -> state
     Just Nothing ->
-      if not (hasAnyRecVarHints (hcStartHints state))
-        then
-          let (tv, state') = freshHint state
-           in state' {hcStartHints = addBinderHint tv (hcStartHints state')}
-        else state
+      if not (null (rvhBinders (hcStartHints state)))
+        then state
+        else case rvhPreferredVar (hcStartHints state) of
+          Just tv ->
+            state {hcStartHints = addBinderHint tv (hcStartHints state)}
+          Nothing ->
+            let (tv, state') = freshHint state
+             in state' {hcStartHints = addBinderHint tv (hcStartHints state')}
     Just (Just tid) ->
       let existing = Map.findWithDefault emptyRecVarHints tid (hcTransitionHints state)
-       in if not (hasAnyRecVarHints existing)
-            then
-              let (tv, state') = freshHint state
-               in state'
-                    { hcTransitionHints =
-                        Map.insert tid (addBinderHint tv existing) (hcTransitionHints state')
-                    }
-            else state
+       in if not (null (rvhBinders existing))
+            then state
+            else case rvhPreferredVar existing of
+              Just tv ->
+                state
+                  { hcTransitionHints =
+                      Map.insert tid (addBinderHint tv existing) (hcTransitionHints state)
+                  }
+              Nothing ->
+                let (tv, state') = freshHint state
+                 in state'
+                      { hcTransitionHints =
+                          Map.insert tid (addBinderHint tv existing) (hcTransitionHints state')
+                      }
 
 freshHint :: HintCompletionState -> (TypeVar, HintCompletionState)
 freshHint state =
@@ -271,48 +300,125 @@ freshHint state =
           }
       )
 
+-- | Build a map from cyclic vertex -> assigned TypeVar.
+-- A vertex is cyclic if the start hints have a binder for it, or if
+-- some transition targeting it acquired a binder during hint completion.
+buildCyclicVarMap ::
+  G.Vertex ->
+  RecVarHints ->
+  Map.Map TransitionId RecVarHints ->
+  [(G.Vertex, G.Vertex, Either Label PayloadType, RecVarHints)] ->
+  Map.Map G.Vertex TypeVar
+buildCyclicVarMap startV startHints transHints transitions =
+  let startEntry = case rvhBinders startHints of
+        (tv : _) -> Map.singleton startV tv
+        []       -> Map.empty
+      transEntries = foldl' checkTrans Map.empty transitions
+   in Map.union startEntry transEntries
+  where
+    checkTrans acc (from, to, content, _) =
+      let tid = (from, to, content)
+       in case Map.lookup tid transHints of
+            Just hints | (tv : _) <- rvhBinders hints ->
+              Map.insertWith (\_ old -> old) to tv acc  -- keep first
+            _ -> acc
+
+-- | Propagate binders to edges targeting cyclic vertices, but only when the
+-- edge can be a tree-edge in graphToType's all-paths traversal.  Edge U→V is
+-- always a back-edge when V dominates U (every path from root to U goes
+-- through V).  We skip those by checking if U is reachable from root in the
+-- graph with V removed.
+propagateGlobalCyclicBinders ::
+  G.Vertex ->
+  [(G.Vertex, G.Vertex, Either Label PayloadType, RecVarHints)] ->
+  Map.Map G.Vertex TypeVar ->
+  HintCompletionState ->
+  HintCompletionState
+propagateGlobalCyclicBinders startV transitions cyclicVars state =
+  foldl' propagate state transitions
+  where
+    -- Simple adjacency for reachability (vertex → [successor vertices])
+    simpleAdj = foldl' (\acc (from, to, _, _) -> Map.insertWith (++) from [to] acc) Map.empty transitions
+    -- Precompute: for each cyclic vertex V, which vertices are reachable from root without V
+    reachSets = Map.mapWithKey (\v _ -> reachableWithout simpleAdj startV v) cyclicVars
+
+    propagate acc (from, to, content, _)
+      | from == to = acc  -- self-loops are always back-edges
+      | otherwise =
+          case Map.lookup to cyclicVars of
+            Nothing -> acc
+            Just tv ->
+              -- Only add binder if 'from' is reachable from root without 'to'
+              -- (meaning 'to' does not dominate 'from', so this edge can be a tree-edge)
+              case Map.lookup to reachSets of
+                Nothing -> acc
+                Just reachable | not (from `Set.member` reachable) -> acc
+                Just _ ->
+                  let tid = (from, to, content)
+                      existing = Map.findWithDefault emptyRecVarHints tid (hcTransitionHints acc)
+                   in if not (null (rvhBinders existing))
+                        then acc
+                        else acc { hcTransitionHints = Map.insert tid (addBinderHint tv existing) (hcTransitionHints acc) }
+
+-- | BFS to find all vertices reachable from 'root' without going through 'excluded'.
+reachableWithout :: Map.Map G.Vertex [G.Vertex] -> G.Vertex -> G.Vertex -> Set.Set G.Vertex
+reachableWithout adj root excluded = go Set.empty (Seq.singleton root)
+  where
+    go visited queue = case Seq.viewl queue of
+      Seq.EmptyL -> visited
+      v Seq.:< rest
+        | v == excluded || v `Set.member` visited -> go visited rest
+        | otherwise ->
+            let visited' = Set.insert v visited
+                succs = Map.findWithDefault [] v adj
+             in go visited' (rest Seq.>< Seq.fromList succs)
+
 buildAdjacency ::
-  [(G.Vertex, G.Vertex, GlobalEdgeLabel)] ->
+  [(G.Vertex, G.Vertex, Either Label PayloadType, RecVarHints)] ->
   Map.Map G.Vertex [(TransitionId, G.Vertex)]
 buildAdjacency transitions =
   foldl' add Map.empty transitions
   where
-    add acc (from, to, lbl) =
-      Map.insertWith
-        (++)
-        from
-        [((from, to, geLabel lbl), to)]
-        acc
+    add acc (from, to, content, _) =
+      Map.insertWith (++) from [((from, to, content), to)] acc
 
 applyTransitionHints ::
   GlobalGraph ->
   Map.Map TransitionId RecVarHints ->
-  Map.Map G.Edge [GlobalEdgeLabel]
+  GlobalGraph
 applyTransitionHints gg hintsByTransition =
-  Map.mapWithKey rewrite (ggEdgeLabels gg)
+  gg
+    { ggEdgeLabels = Map.mapWithKey rewriteBranch (ggEdgeLabels gg)
+    , ggPayloadEdges = Map.mapWithKey rewritePayload (ggPayloadEdges gg)
+    }
   where
-    rewrite (from, to) labels =
-      fmap
-        (\lbl -> lbl {geTargetHints = Map.findWithDefault (geTargetHints lbl) (from, to, geLabel lbl) hintsByTransition})
-        labels
+    rewriteBranch (from, to) labels =
+      fmap (\lbl -> lbl {geTargetHints = Map.findWithDefault (geTargetHints lbl) (from, to, Left (geLabel lbl)) hintsByTransition}) labels
+    rewritePayload (from, to) labels =
+      fmap (\lbl -> lbl {gpeTargetHints = Map.findWithDefault (gpeTargetHints lbl) (from, to, Right (gpePayload lbl)) hintsByTransition}) labels
 
 allHintNames ::
   RecVarHints ->
-  [(G.Vertex, G.Vertex, GlobalEdgeLabel)] ->
+  [(G.Vertex, G.Vertex, Either Label PayloadType, RecVarHints)] ->
   Set.Set String
 allHintNames startHints transitions =
   Set.fromList
     ( fmap getTypeVar (recVarHintsToList startHints)
         ++ [ getTypeVar tv
-           | (_, _, lbl) <- transitions
-           , tv <- recVarHintsToList (geTargetHints lbl)
+           | (_, _, _, hints) <- transitions
+           , tv <- recVarHintsToList hints
            ]
     )
 
-globalTransitions :: GlobalGraph -> [(G.Vertex, G.Vertex, GlobalEdgeLabel)]
+globalTransitions :: GlobalGraph -> [(G.Vertex, G.Vertex, Either Label PayloadType, RecVarHints)]
 globalTransitions gg =
-  [ (from, to, lbl)
+  [ (from, to, Left (geLabel lbl), geTargetHints lbl)
   | ((from, to), labels) <- Map.toList (ggEdgeLabels gg)
+  , lbl <- labels
+  ]
+  ++
+  [ (from, to, Right (gpePayload lbl), gpeTargetHints lbl)
+  | ((from, to), labels) <- Map.toList (ggPayloadEdges gg)
   , lbl <- labels
   ]
 
@@ -348,6 +454,7 @@ globalGraphToType gg = buildAt Set.empty Map.empty (ggStartVarHints completed) (
   where
     completed = completeGlobalHints gg
     outgoing = globalOutgoing completed
+    payloadOut = globalPayloadOutgoing completed
 
     buildAt ::
       Set.Set G.Vertex ->
@@ -368,6 +475,7 @@ globalGraphToType gg = buildAt Set.empty Map.empty (ggStartVarHints completed) (
           body <- case nodeType of
             GlobalEndNode -> buildEndNode v
             GlobalNode -> buildMessageNode (Set.insert v path) activeNames' v
+            GlobalPayloadNode -> buildPayloadNode (Set.insert v path) activeNames' v
           pure (foldr GRec body (rvhBinders incomingHints))
 
     lookupNode :: G.Vertex -> Either GraphToTypeError GlobalNode
@@ -419,6 +527,23 @@ globalGraphToType gg = buildAt Set.empty Map.empty (ggStartVarHints completed) (
                 )
             b0 : bs ->
               Right (GMessage sender receiver (b0 NE.:| bs))
+
+    buildPayloadNode ::
+      Set.Set G.Vertex ->
+      Map.Map TypeVar G.Vertex ->
+      G.Vertex ->
+      Either GraphToTypeError GlobalType
+    buildPayloadNode path activeNames v =
+      case Map.lookup v payloadOut of
+        Nothing ->
+          Left (GraphToTypeInvalidGraph
+            ("Payload vertex " ++ show v ++ " has no outgoing payload transition"))
+        Just [(edgeLbl, dst)] -> do
+          cont <- buildAt path activeNames (gpeTargetHints edgeLbl) dst
+          pure (GPayload (gpeSender edgeLbl) (gpeReceiver edgeLbl) (gpePayload edgeLbl) cont)
+        Just branches ->
+          Left (GraphToTypeInvalidGraph
+            ("Payload vertex " ++ show v ++ " has " ++ show (length branches) ++ " outgoing transitions, expected 1"))
 
     buildBranch ::
       Set.Set G.Vertex ->
@@ -518,16 +643,28 @@ globalOutgoing gg =
     Map.empty
     (ggEdgeLabels gg)
 
+globalPayloadOutgoing :: GlobalGraph -> Map.Map G.Vertex [(GlobalPayloadEdgeLabel, G.Vertex)]
+globalPayloadOutgoing gg =
+  Map.foldlWithKey'
+    (\acc (from, to) labels -> foldl' (\m lbl -> Map.insertWith (++) from [(lbl, to)] m) acc labels)
+    Map.empty
+    (ggPayloadEdges gg)
+
 globalNode ::
   Env.Map TypeVar G.Vertex ->
   GlobalType ->
-  State (GraphBuilder GlobalNode GlobalEdgeLabel) G.Vertex
+  State (GraphBuilder GlobalNode (Either GlobalEdgeLabel GlobalPayloadEdgeLabel)) G.Vertex
 globalNode env gtype = case gtype of
   GMessage sender receiver branches -> do
     v <- freshNode GlobalNode
     for_ (NE.toList branches) $ \(lbl, cont) -> do
       dest <- globalNode env cont
-      addEdge v dest (GlobalEdgeLabel sender receiver lbl (entryHintsGlobal cont))
+      addEdge v dest (Left (GlobalEdgeLabel sender receiver lbl (entryHintsGlobal cont)))
+    pure v
+  GPayload sender receiver pt cont -> do
+    v <- freshNode GlobalPayloadNode
+    dest <- globalNode env cont
+    addEdge v dest (Right (GlobalPayloadEdgeLabel sender receiver pt (entryHintsGlobal cont)))
     pure v
   GVar var -> lookupVar env var
   GRec var body ->
@@ -535,17 +672,20 @@ globalNode env gtype = case gtype of
       globalNode (Env.insert var start env) body
   GEnd -> freshNode GlobalEndNode
 
-finaliseGlobal :: G.Vertex -> RecVarHints -> GraphBuilder GlobalNode GlobalEdgeLabel -> GlobalGraph
+finaliseGlobal :: G.Vertex -> RecVarHints -> GraphBuilder GlobalNode (Either GlobalEdgeLabel GlobalPayloadEdgeLabel) -> GlobalGraph
 finaliseGlobal start startHints builder =
   let bounds = graphBounds builder
-      graph = G.buildG bounds (map fst (gbEdges builder))
+      allEdges = gbEdges builder
+      graph = G.buildG bounds (map fst allEdges)
       nodeTable = array bounds (Map.toList (gbNodes builder))
-      edgeLabels = collectEdges (gbEdges builder)
+      branchEdges = [(e, lbl) | (e, Left lbl) <- allEdges]
+      payloadEdges = [(e, plbl) | (e, Right plbl) <- allEdges]
    in GlobalGraph
         { ggGraph = graph
         , ggStart = start
         , ggNodes = nodeTable
-        , ggEdgeLabels = edgeLabels
+        , ggEdgeLabels = collectEdges branchEdges
+        , ggPayloadEdges = collectEdges payloadEdges
         , ggStartVarHints = normaliseRecVarHints startHints
         }
 
@@ -590,10 +730,22 @@ data LocalEdgeLabel = LocalEdgeLabel
 
 instance NFData LocalEdgeLabel
 
+data LocalPayloadEdgeLabel = LocalPayloadEdgeLabel
+  { lpeDirection :: LocalDirection
+  , lpePeer :: Participant
+  , lpePayload :: PayloadType
+  , lpeTargetHints :: RecVarHints
+  }
+  deriving (Eq, Ord, Show, Generic)
+
+instance NFData LocalPayloadEdgeLabel
+
 -- | Node kind in a local automaton.
 data LocalNode
   = LocalSendNode Participant [Label]
   | LocalRecvNode Participant [Label]
+  | LocalPayloadSendNode Participant PayloadType
+  | LocalPayloadRecvNode Participant PayloadType
   | LocalEndNode
   deriving (Eq, Show, Generic)
 
@@ -605,6 +757,7 @@ data LocalGraph = LocalGraph
   , lgStart :: G.Vertex
   , lgNodes :: G.Table LocalNode
   , lgEdgeLabels :: Map.Map G.Edge [LocalEdgeLabel]
+  , lgPayloadEdges :: Map.Map G.Edge [LocalPayloadEdgeLabel]
   , lgStartVarHints :: RecVarHints
   }
   deriving (Eq, Show, Generic)
@@ -624,6 +777,7 @@ localGraphToType lg = buildAt Set.empty Map.empty (lgStartVarHints completed) (l
   where
     completed = completeLocalHints lg
     outgoing = localOutgoing completed
+    localPayloadOut = localPayloadOutgoing completed
 
     buildAt ::
       Set.Set G.Vertex ->
@@ -645,6 +799,10 @@ localGraphToType lg = buildAt Set.empty Map.empty (lgStartVarHints completed) (l
             LocalEndNode -> buildEndNode v
             LocalSendNode peer _ -> buildChoiceNode Send peer (Set.insert v path) activeNames' v
             LocalRecvNode peer _ -> buildChoiceNode Receive peer (Set.insert v path) activeNames' v
+            LocalPayloadSendNode peer pt ->
+              buildPayloadNode Send peer pt (Set.insert v path) activeNames' v
+            LocalPayloadRecvNode peer pt ->
+              buildPayloadNode Receive peer pt (Set.insert v path) activeNames' v
           pure (foldr LRec body (rvhBinders incomingHints))
 
     lookupNode :: G.Vertex -> Either GraphToTypeError LocalNode
@@ -701,6 +859,28 @@ localGraphToType lg = buildAt Set.empty Map.empty (lgStartVarHints completed) (l
                 case expectedDir of
                   Send -> LSend expectedPeer (b0 NE.:| bs)
                   Receive -> LRecv expectedPeer (b0 NE.:| bs)
+
+    buildPayloadNode ::
+      LocalDirection ->
+      Participant ->
+      PayloadType ->
+      Set.Set G.Vertex ->
+      Map.Map TypeVar G.Vertex ->
+      G.Vertex ->
+      Either GraphToTypeError LocalType
+    buildPayloadNode dir peer pt path activeNames v =
+      case Map.lookup v localPayloadOut of
+        Nothing ->
+          Left (GraphToTypeInvalidGraph
+            ("Local payload vertex " ++ show v ++ " has no outgoing payload transition"))
+        Just [(edgeLbl, dst)] -> do
+          cont <- buildAt path activeNames (lpeTargetHints edgeLbl) dst
+          pure $ case dir of
+            Send -> LPayloadSend peer pt cont
+            Receive -> LPayloadRecv peer pt cont
+        Just branches ->
+          Left (GraphToTypeInvalidGraph
+            ("Local payload vertex " ++ show v ++ " has " ++ show (length branches) ++ " transitions, expected 1"))
 
     buildBranch ::
       Set.Set G.Vertex ->
@@ -787,7 +967,7 @@ localGraphToType lg = buildAt Set.empty Map.empty (lgStartVarHints completed) (l
         branchLabels = fmap (leLabel . fst) branches
         labels = Set.fromList branchLabels
 
-type LocalTransitionId = (G.Vertex, G.Vertex, LocalDirection, Participant, Label)
+type LocalTransitionId = (G.Vertex, G.Vertex, LocalDirection, Participant, Either Label PayloadType)
 
 data LocalHintCompletionState = LocalHintCompletionState
   { lhcSeen :: Set.Set G.Vertex
@@ -800,13 +980,12 @@ data LocalHintCompletionState = LocalHintCompletionState
 
 completeLocalHints :: LocalGraph -> LocalGraph
 completeLocalHints lg =
-  lg
-    { lgStartVarHints = lhcStartHints finalState
-    , lgEdgeLabels = applyLocalTransitionHints lg (lhcTransitionHints finalState)
-    }
+  applyLocalTransitionHints
+    (lg { lgStartVarHints = lhcStartHints finalState' })
+    (lhcTransitionHints finalState')
   where
     transitions = localTransitions lg
-    hintsByTransition = Map.fromList [(localTransitionId from to lbl, leTargetHints lbl) | (from, to, lbl) <- transitions]
+    hintsByTransition = Map.fromList [(tid, hints) | (_, _, tid, hints) <- transitions]
     adjacency = buildLocalAdjacency transitions
     usedNames = allLocalHintNames (lgStartVarHints lg) transitions
     initial =
@@ -819,6 +998,9 @@ completeLocalHints lg =
         , lhcTransitionHints = hintsByTransition
         }
     finalState = dfsCompleteLocal adjacency (lgStart lg) initial
+    -- Propagate binders to ALL non-self-loop edges targeting cyclic vertices.
+    cyclicVars = buildLocalCyclicVarMap (lgStart lg) (lhcStartHints finalState) (lhcTransitionHints finalState) transitions
+    finalState' = propagateLocalCyclicBinders (lgStart lg) transitions cyclicVars finalState
 
 dfsCompleteLocal ::
   Map.Map G.Vertex [(LocalTransitionId, G.Vertex)] ->
@@ -848,21 +1030,30 @@ ensureEntryHintForAncestorLocal ancestor state =
   case Map.lookup ancestor (lhcPathEntry state) of
     Nothing -> state
     Just Nothing ->
-      if not (hasAnyRecVarHints (lhcStartHints state))
-        then
-          let (tv, state') = freshLocalHint state
-           in state' {lhcStartHints = addBinderHint tv (lhcStartHints state')}
-        else state
+      if not (null (rvhBinders (lhcStartHints state)))
+        then state
+        else case rvhPreferredVar (lhcStartHints state) of
+          Just tv ->
+            state {lhcStartHints = addBinderHint tv (lhcStartHints state)}
+          Nothing ->
+            let (tv, state') = freshLocalHint state
+             in state' {lhcStartHints = addBinderHint tv (lhcStartHints state')}
     Just (Just tid) ->
       let existing = Map.findWithDefault emptyRecVarHints tid (lhcTransitionHints state)
-       in if not (hasAnyRecVarHints existing)
-            then
-              let (tv, state') = freshLocalHint state
-               in state'
-                    { lhcTransitionHints =
-                        Map.insert tid (addBinderHint tv existing) (lhcTransitionHints state')
-                    }
-            else state
+       in if not (null (rvhBinders existing))
+            then state
+            else case rvhPreferredVar existing of
+              Just tv ->
+                state
+                  { lhcTransitionHints =
+                      Map.insert tid (addBinderHint tv existing) (lhcTransitionHints state)
+                  }
+              Nothing ->
+                let (tv, state') = freshLocalHint state
+                 in state'
+                      { lhcTransitionHints =
+                          Map.insert tid (addBinderHint tv existing) (lhcTransitionHints state')
+                      }
 
 freshLocalHint :: LocalHintCompletionState -> (TypeVar, LocalHintCompletionState)
 freshLocalHint state =
@@ -874,52 +1065,109 @@ freshLocalHint state =
           }
       )
 
+-- | Build a map from cyclic vertex -> assigned TypeVar for local graphs.
+buildLocalCyclicVarMap ::
+  G.Vertex ->
+  RecVarHints ->
+  Map.Map LocalTransitionId RecVarHints ->
+  [(G.Vertex, G.Vertex, LocalTransitionId, RecVarHints)] ->
+  Map.Map G.Vertex TypeVar
+buildLocalCyclicVarMap startV startHints transHints transitions =
+  let startEntry = case rvhBinders startHints of
+        (tv : _) -> Map.singleton startV tv
+        []       -> Map.empty
+      transEntries = foldl' checkTrans Map.empty transitions
+   in Map.union startEntry transEntries
+  where
+    checkTrans acc (_, to, tid, _) =
+      case Map.lookup tid transHints of
+        Just hints | (tv : _) <- rvhBinders hints ->
+          Map.insertWith (\_ old -> old) to tv acc
+        _ -> acc
+
+-- | Propagate binders to edges targeting cyclic vertices, but only when the
+-- edge can be a tree-edge in graphToType's all-paths traversal.
+propagateLocalCyclicBinders ::
+  G.Vertex ->
+  [(G.Vertex, G.Vertex, LocalTransitionId, RecVarHints)] ->
+  Map.Map G.Vertex TypeVar ->
+  LocalHintCompletionState ->
+  LocalHintCompletionState
+propagateLocalCyclicBinders startV transitions cyclicVars state =
+  foldl' propagate state transitions
+  where
+    simpleAdj = foldl' (\acc (from, to, _, _) -> Map.insertWith (++) from [to] acc) Map.empty transitions
+    reachSets = Map.mapWithKey (\v _ -> reachableWithout simpleAdj startV v) cyclicVars
+
+    propagate acc (from, to, tid, _)
+      | from == to = acc  -- self-loops are always back-edges
+      | otherwise =
+          case Map.lookup to cyclicVars of
+            Nothing -> acc
+            Just tv ->
+              case Map.lookup to reachSets of
+                Nothing -> acc
+                Just reachable | not (from `Set.member` reachable) -> acc
+                Just _ ->
+                  let existing = Map.findWithDefault emptyRecVarHints tid (lhcTransitionHints acc)
+                   in if not (null (rvhBinders existing))
+                        then acc
+                        else acc { lhcTransitionHints = Map.insert tid (addBinderHint tv existing) (lhcTransitionHints acc) }
+
 localTransitionId :: G.Vertex -> G.Vertex -> LocalEdgeLabel -> LocalTransitionId
 localTransitionId from to lbl =
-  (from, to, leDirection lbl, lePeer lbl, leLabel lbl)
+  (from, to, leDirection lbl, lePeer lbl, Left (leLabel lbl))
 
-localTransitions :: LocalGraph -> [(G.Vertex, G.Vertex, LocalEdgeLabel)]
+localPayloadTransitionId :: G.Vertex -> G.Vertex -> LocalPayloadEdgeLabel -> LocalTransitionId
+localPayloadTransitionId from to lbl =
+  (from, to, lpeDirection lbl, lpePeer lbl, Right (lpePayload lbl))
+
+localTransitions :: LocalGraph -> [(G.Vertex, G.Vertex, LocalTransitionId, RecVarHints)]
 localTransitions lg =
-  [ (from, to, lbl)
+  [ (from, to, localTransitionId from to lbl, leTargetHints lbl)
   | ((from, to), labels) <- Map.toList (lgEdgeLabels lg)
+  , lbl <- labels
+  ]
+  ++
+  [ (from, to, localPayloadTransitionId from to lbl, lpeTargetHints lbl)
+  | ((from, to), labels) <- Map.toList (lgPayloadEdges lg)
   , lbl <- labels
   ]
 
 buildLocalAdjacency ::
-  [(G.Vertex, G.Vertex, LocalEdgeLabel)] ->
+  [(G.Vertex, G.Vertex, LocalTransitionId, RecVarHints)] ->
   Map.Map G.Vertex [(LocalTransitionId, G.Vertex)]
 buildLocalAdjacency transitions =
   foldl' add Map.empty transitions
   where
-    add acc (from, to, lbl) =
-      Map.insertWith
-        (++)
-        from
-        [(localTransitionId from to lbl, to)]
-        acc
+    add acc (from, to, tid, _) =
+      Map.insertWith (++) from [(tid, to)] acc
 
 applyLocalTransitionHints ::
   LocalGraph ->
   Map.Map LocalTransitionId RecVarHints ->
-  Map.Map G.Edge [LocalEdgeLabel]
+  LocalGraph
 applyLocalTransitionHints lg hintsByTransition =
-  Map.mapWithKey rewrite (lgEdgeLabels lg)
+  lg
+    { lgEdgeLabels = Map.mapWithKey rewriteBranch (lgEdgeLabels lg)
+    , lgPayloadEdges = Map.mapWithKey rewritePayload (lgPayloadEdges lg)
+    }
   where
-    rewrite (from, to) labels =
-      fmap
-        (\lbl -> lbl {leTargetHints = Map.findWithDefault (leTargetHints lbl) (localTransitionId from to lbl) hintsByTransition})
-        labels
+    rewriteBranch (from, to) labels =
+      fmap (\lbl -> lbl {leTargetHints = Map.findWithDefault (leTargetHints lbl) (localTransitionId from to lbl) hintsByTransition}) labels
+    rewritePayload (from, to) labels =
+      fmap (\lbl -> lbl {lpeTargetHints = Map.findWithDefault (lpeTargetHints lbl) (localPayloadTransitionId from to lbl) hintsByTransition}) labels
 
 allLocalHintNames ::
   RecVarHints ->
-  [(G.Vertex, G.Vertex, LocalEdgeLabel)] ->
+  [(G.Vertex, G.Vertex, LocalTransitionId, RecVarHints)] ->
   Set.Set String
 allLocalHintNames startHints transitions =
   Set.fromList
     ( fmap getTypeVar (recVarHintsToList startHints)
         ++ [ getTypeVar tv
-           | (_, _, lbl) <- transitions
-           , tv <- recVarHintsToList (leTargetHints lbl)
+           | (_, _, _, hints) <- transitions
+           , tv <- recVarHintsToList hints
            ]
     )
 
@@ -930,38 +1178,58 @@ localOutgoing lg =
     Map.empty
     (lgEdgeLabels lg)
 
-localNode :: Env.Map TypeVar G.Vertex -> LocalType -> State (GraphBuilder LocalNode LocalEdgeLabel) G.Vertex
+localPayloadOutgoing :: LocalGraph -> Map.Map G.Vertex [(LocalPayloadEdgeLabel, G.Vertex)]
+localPayloadOutgoing lg =
+  Map.foldlWithKey'
+    (\acc (from, to) labels -> foldl' (\m lbl -> Map.insertWith (++) from [(lbl, to)] m) acc labels)
+    Map.empty
+    (lgPayloadEdges lg)
+
+localNode :: Env.Map TypeVar G.Vertex -> LocalType -> State (GraphBuilder LocalNode (Either LocalEdgeLabel LocalPayloadEdgeLabel)) G.Vertex
 localNode env lt = case lt of
   LSend peer branches -> do
     let labels = fmap fst (NE.toList branches)
     v <- freshNode (LocalSendNode peer labels)
     for_ (NE.toList branches) $ \(lbl, cont) -> do
       dest <- localNode env cont
-      addEdge v dest (LocalEdgeLabel Send peer lbl (entryHintsLocal cont))
+      addEdge v dest (Left (LocalEdgeLabel Send peer lbl (entryHintsLocal cont)))
     pure v
   LRecv peer branches -> do
     let labels = fmap fst (NE.toList branches)
     v <- freshNode (LocalRecvNode peer labels)
     for_ (NE.toList branches) $ \(lbl, cont) -> do
       dest <- localNode env cont
-      addEdge v dest (LocalEdgeLabel Receive peer lbl (entryHintsLocal cont))
+      addEdge v dest (Left (LocalEdgeLabel Receive peer lbl (entryHintsLocal cont)))
+    pure v
+  LPayloadSend peer pt cont -> do
+    v <- freshNode (LocalPayloadSendNode peer pt)
+    dest <- localNode env cont
+    addEdge v dest (Right (LocalPayloadEdgeLabel Send peer pt (entryHintsLocal cont)))
+    pure v
+  LPayloadRecv peer pt cont -> do
+    v <- freshNode (LocalPayloadRecvNode peer pt)
+    dest <- localNode env cont
+    addEdge v dest (Right (LocalPayloadEdgeLabel Receive peer pt (entryHintsLocal cont)))
     pure v
   LVar var -> lookupVar env var
   LRec var body ->
     mfix $ \start -> localNode (Env.insert var start env) body
   LEnd -> freshNode LocalEndNode
 
-finaliseLocal :: G.Vertex -> RecVarHints -> GraphBuilder LocalNode LocalEdgeLabel -> LocalGraph
+finaliseLocal :: G.Vertex -> RecVarHints -> GraphBuilder LocalNode (Either LocalEdgeLabel LocalPayloadEdgeLabel) -> LocalGraph
 finaliseLocal start startHints builder =
   let bounds = graphBounds builder
-      graph = G.buildG bounds (map fst (gbEdges builder))
+      allEdges = gbEdges builder
+      graph = G.buildG bounds (map fst allEdges)
       nodeTable = array bounds (Map.toList (gbNodes builder))
-      edgeLabels = collectEdges (gbEdges builder)
+      branchEdges = [(e, lbl) | (e, Left lbl) <- allEdges]
+      payloadEdges = [(e, plbl) | (e, Right plbl) <- allEdges]
    in LocalGraph
         { lgGraph = graph
         , lgStart = start
         , lgNodes = nodeTable
-        , lgEdgeLabels = edgeLabels
+        , lgEdgeLabels = collectEdges branchEdges
+        , lgPayloadEdges = collectEdges payloadEdges
         , lgStartVarHints = normaliseRecVarHints startHints
         }
 
@@ -1008,6 +1276,15 @@ data ContextEdgeLabel
       , ceReceiver :: Participant
       , ceLabel :: Label
       }
+  | ContextPayloadSingleEdge
+      Participant     -- actor
+      LocalDirection  -- direction
+      Participant     -- peer
+      PayloadType     -- payload type
+  | ContextPayloadSyncEdge
+      Participant     -- sender
+      Participant     -- receiver
+      PayloadType     -- payload type
   deriving (Eq, Ord, Show, Generic)
 
 instance NFData ContextEdgeLabel
@@ -1072,15 +1349,20 @@ data ContextBuilder = ContextBuilder
   , cbQueue :: Seq.Seq ContextState
   }
 
-data LocalStep = LocalStep
-  { lsTo :: !G.Vertex
-  , lsLabel :: LocalEdgeLabel
-  }
+data LocalStep
+  = BranchStep !G.Vertex LocalEdgeLabel
+  | PayloadStep !G.Vertex LocalPayloadEdgeLabel
+
+stepTarget :: LocalStep -> G.Vertex
+stepTarget (BranchStep v _) = v
+stepTarget (PayloadStep v _) = v
 
 -- | Violations of the context synchrony invariant.
 data ContextInvariantError
   = MissingSyncForSingles G.Vertex Participant Participant Label
   | SyncWithoutSingles G.Vertex Participant Participant Label
+  | MissingSyncForPayloadSingles G.Vertex Participant Participant PayloadType
+  | PayloadSyncWithoutSingles G.Vertex Participant Participant PayloadType
   deriving (Eq, Ord, Show, Generic)
 
 instance NFData ContextInvariantError
@@ -1099,13 +1381,14 @@ mkComponent _ lg =
 
 outgoingSteps :: LocalGraph -> Map.Map G.Vertex [LocalStep]
 outgoingSteps lg =
-  foldl' addPair Map.empty (Map.toList (lgEdgeLabels lg))
+  foldl' addBranch (foldl' addPayload Map.empty payloadPairs) branchPairs
   where
-    addPair acc ((from, to), labels) =
-      foldl'
-        (\m lbl -> Map.insertWith (++) from [LocalStep to lbl] m)
-        acc
-        labels
+    branchPairs = Map.toList (lgEdgeLabels lg)
+    payloadPairs = Map.toList (lgPayloadEdges lg)
+    addBranch acc ((from, to), labels) =
+      foldl' (\m lbl -> Map.insertWith (++) from [BranchStep to lbl] m) acc labels
+    addPayload acc ((from, to), labels) =
+      foldl' (\m lbl -> Map.insertWith (++) from [PayloadStep to lbl] m) acc labels
 
 exploreContext :: Map.Map Participant Component -> ContextState -> ContextBuilder
 exploreContext components startState = go initial
@@ -1167,22 +1450,29 @@ contextTransitions components (ContextState states) =
       Map.findWithDefault [] (stateAt participant) (cOutgoing component)
 
     singleTransitions =
-      [ ( ContextState (Map.insert participant (lsTo step) states)
-        , ContextSingleEdge
-            { ceActor = participant
-            , ceDirection = leDirection lbl
-            , cePeer = lePeer lbl
-            , ceLabel = leLabel lbl
-            }
-        )
+      [ case step of
+          BranchStep to lbl ->
+            ( ContextState (Map.insert participant to states)
+            , ContextSingleEdge
+                { ceActor = participant
+                , ceDirection = leDirection lbl
+                , cePeer = lePeer lbl
+                , ceLabel = leLabel lbl
+                }
+            )
+          PayloadStep to lbl ->
+            ( ContextState (Map.insert participant to states)
+            , ContextPayloadSingleEdge participant (lpeDirection lbl) (lpePeer lbl) (lpePayload lbl)
+            )
       | (participant, comp) <- Map.toList components
       , step <- outgoingAt participant comp
-      , let lbl = lsLabel step
       ]
 
-    syncTransitions =
+    syncTransitions = branchSyncs ++ payloadSyncs
+
+    branchSyncs =
       [ ( ContextState
-            (Map.insert receiver (lsTo recvStep) (Map.insert sender (lsTo sendStep) states))
+            (Map.insert receiver (stepTarget recvStep) (Map.insert sender (stepTarget sendStep) states))
         , ContextSyncEdge
             { ceSender = sender
             , ceReceiver = receiver
@@ -1190,16 +1480,30 @@ contextTransitions components (ContextState states) =
             }
         )
       | (sender, senderComp) <- Map.toList components
-      , sendStep <- outgoingAt sender senderComp
-      , let sendLbl = lsLabel sendStep
+      , sendStep@(BranchStep _ sendLbl) <- outgoingAt sender senderComp
       , leDirection sendLbl == Send
       , let receiver = lePeer sendLbl
       , Just receiverComp <- [Map.lookup receiver components]
-      , recvStep <- outgoingAt receiver receiverComp
-      , let recvLbl = lsLabel recvStep
+      , recvStep@(BranchStep _ recvLbl) <- outgoingAt receiver receiverComp
       , leDirection recvLbl == Receive
       , lePeer recvLbl == sender
       , leLabel recvLbl == leLabel sendLbl
+      ]
+
+    payloadSyncs =
+      [ ( ContextState
+            (Map.insert receiver (stepTarget recvStep) (Map.insert sender (stepTarget sendStep) states))
+        , ContextPayloadSyncEdge sender receiver (lpePayload sendLbl)
+        )
+      | (sender, senderComp) <- Map.toList components
+      , sendStep@(PayloadStep _ sendLbl) <- outgoingAt sender senderComp
+      , lpeDirection sendLbl == Send
+      , let receiver = lpePeer sendLbl
+      , Just receiverComp <- [Map.lookup receiver components]
+      , recvStep@(PayloadStep _ recvLbl) <- outgoingAt receiver receiverComp
+      , lpeDirection recvLbl == Receive
+      , lpePeer recvLbl == sender
+      , lpePayload recvLbl == lpePayload sendLbl
       ]
 
 finaliseContext :: [Participant] -> ContextBuilder -> ContextGraph
@@ -1229,21 +1533,26 @@ checkContextSynchrony cg =
     checkSource :: G.Vertex -> [ContextInvariantError]
     checkSource source =
       let outgoing = Map.findWithDefault [] source outgoingBySource
+          -- Branch synchrony
           sendKeys = Set.fromList [k | (_, ContextSingleEdge a Send p l) <- outgoing, let k = (a, p, l)]
           recvKeys = Set.fromList [k | (_, ContextSingleEdge a Receive p l) <- outgoing, let k = (p, a, l)]
           syncKeys = Set.fromList [k | (_, ContextSyncEdge s r l) <- outgoing, let k = (s, r, l)]
           requiredSync = Set.intersection sendKeys recvKeys
           missingSync = Set.difference requiredSync syncKeys
           spuriousSync = Set.difference syncKeys requiredSync
-          missingSyncErrs =
-            [ MissingSyncForSingles source sender receiver label
-            | (sender, receiver, label) <- Set.toList missingSync
-            ]
-          spuriousSyncErrs =
-            [ SyncWithoutSingles source sender receiver label
-            | (sender, receiver, label) <- Set.toList spuriousSync
-            ]
-       in missingSyncErrs ++ spuriousSyncErrs
+          -- Payload synchrony
+          pSendKeys = Set.fromList [k | (_, ContextPayloadSingleEdge a Send p pt) <- outgoing, let k = (a, p, pt)]
+          pRecvKeys = Set.fromList [k | (_, ContextPayloadSingleEdge a Receive p pt) <- outgoing, let k = (p, a, pt)]
+          pSyncKeys = Set.fromList [k | (_, ContextPayloadSyncEdge s r pt) <- outgoing, let k = (s, r, pt)]
+          pRequiredSync = Set.intersection pSendKeys pRecvKeys
+          pMissingSync = Set.difference pRequiredSync pSyncKeys
+          pSpuriousSync = Set.difference pSyncKeys pRequiredSync
+          -- Errors
+          missingSyncErrs = [MissingSyncForSingles source s r l | (s, r, l) <- Set.toList missingSync]
+          spuriousSyncErrs = [SyncWithoutSingles source s r l | (s, r, l) <- Set.toList spuriousSync]
+          pMissingSyncErrs = [MissingSyncForPayloadSingles source s r pt | (s, r, pt) <- Set.toList pMissingSync]
+          pSpuriousSyncErrs = [PayloadSyncWithoutSingles source s r pt | (s, r, pt) <- Set.toList pSpuriousSync]
+       in missingSyncErrs ++ spuriousSyncErrs ++ pMissingSyncErrs ++ pSpuriousSyncErrs
 
 collectOutgoing :: Map.Map G.Edge [ContextEdgeLabel] -> Map.Map G.Vertex [(G.Vertex, ContextEdgeLabel)]
 collectOutgoing =

@@ -109,6 +109,7 @@ collectSyncAdjacency =
       | any isSync labels = Map.insertWith (++) from [to] acc
       | otherwise = acc
     isSync ContextSyncEdge{} = True
+    isSync (ContextPayloadSyncEdge _ _ _) = True
     isSync _ = False
 
 syncReachableFrom :: G.Vertex -> Map.Map G.Vertex [G.Vertex] -> Set.Set G.Vertex

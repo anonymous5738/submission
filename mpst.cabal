@@ -33,9 +33,12 @@ library
       Liveness
       Visualise
       Benchmark.Catalogue
+      Benchmark.Generators
       Benchmark.Size
       Benchmark.Runner
       Benchmark.LaTeX
+      Benchmark.Types
+      Benchmark.QBF
   other-modules:
       Syntax.AST
       Syntax.AlphaEq
@@ -99,6 +102,7 @@ executable mpst-bench
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       array
+    , async
     , base >=4.14 && <5
     , containers
     , deepseq

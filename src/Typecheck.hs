@@ -91,6 +91,22 @@ check env proc ltype =
                            in if null errors then Right () else Left errors
             _ -> Left [StructuralMismatch proc ltype]
 
+    PSendPayload p _e cont ->
+      let t = unfoldRec ltype
+       in case t of
+            LPayloadSend p' _pt contType
+              | p /= p' -> Left [ParticipantMismatch p p']
+              | otherwise -> check env cont contType
+            _ -> Left [StructuralMismatch proc ltype]
+
+    PRecvPayload p _var cont ->
+      let t = unfoldRec ltype
+       in case t of
+            LPayloadRecv p' _pt contType
+              | p /= p' -> Left [ParticipantMismatch p p']
+              | otherwise -> check env cont contType
+            _ -> Left [StructuralMismatch proc ltype]
+
     PIf e thenP elseP ->
       let t = unfoldRec ltype
           condErrors = case inferExprType e of
@@ -124,6 +140,7 @@ inferExprType expr =
     EInt _  -> Right TInt
     EBool _ -> Right TBool
     EVar _  -> Right TAny
+    EUnit   -> Right TAny
     ENot e  -> do
       t <- inferExprType e
       expectType TBool t e

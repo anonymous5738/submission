@@ -15,6 +15,7 @@ globalTypeSize GEnd = 1
 globalTypeSize (GVar _) = 1
 globalTypeSize (GRec _ body) = 1 + globalTypeSize body
 globalTypeSize (GMessage _ _ branches) = 1 + branchesSize globalTypeSize branches
+globalTypeSize (GPayload _ _ _ cont) = 1 + globalTypeSize cont
 
 -- | Count AST nodes in a local type.
 localTypeSize :: LocalType -> Int
@@ -23,6 +24,8 @@ localTypeSize (LVar _) = 1
 localTypeSize (LRec _ body) = 1 + localTypeSize body
 localTypeSize (LSend _ branches) = 1 + branchesSize localTypeSize branches
 localTypeSize (LRecv _ branches) = 1 + branchesSize localTypeSize branches
+localTypeSize (LPayloadSend _ _ cont) = 1 + localTypeSize cont
+localTypeSize (LPayloadRecv _ _ cont) = 1 + localTypeSize cont
 
 -- | Sum of all local type sizes in a context.
 contextSize :: Map.Map Participant LocalType -> Int

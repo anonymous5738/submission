@@ -43,9 +43,12 @@ library:
     - Liveness
     - Visualise
     - Benchmark.Catalogue
+    - Benchmark.Generators
     - Benchmark.Size
     - Benchmark.Runner
     - Benchmark.LaTeX
+    - Benchmark.Types
+    - Benchmark.QBF
   other-modules:
     - Syntax.AST
     - Syntax.AlphaEq
@@ -73,6 +76,7 @@ executables:
       - -with-rtsopts=-N
     dependencies:
       - mpst
+      - async
       - process
       - time
 

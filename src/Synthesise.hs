@@ -13,6 +13,7 @@ import Automata
   ( ContextEdgeLabel(..)
   , ContextGraph(..)
   , GlobalEdgeLabel(..)
+  , GlobalPayloadEdgeLabel(..)
   , GlobalGraph(..)
   , GlobalNode(..)
   , RecVarHints(..)
@@ -37,14 +38,15 @@ instance NFData SynthesisError
 
 -- | Internal state threaded through the synthesis traversal.
 data SynthState = SynthState
-  { ssNextVertex :: !G.Vertex -- next vertex we generate 
+  { ssNextVertex :: !G.Vertex -- next vertex we generate
   , ssNodes :: Map.Map G.Vertex GlobalNode -- info about vertices
-  , ssEdges :: [((G.Vertex, G.Vertex), GlobalEdgeLabel)] -- info about edges 
-  , ssEnv :: Map.Map (Participant, G.Vertex) G.Vertex -- map from seen "states" so we can loop back  
+  , ssEdges :: [((G.Vertex, G.Vertex), GlobalEdgeLabel)] -- info about edges
+  , ssPayloadEdges :: [((G.Vertex, G.Vertex), GlobalPayloadEdgeLabel)] -- payload edges
+  , ssEnv :: Map.Map (Participant, G.Vertex) G.Vertex -- map from seen "states" so we can loop back
   }
 
 emptySynthState :: SynthState
-emptySynthState = SynthState 0 Map.empty [] Map.empty
+emptySynthState = SynthState 0 Map.empty [] [] Map.empty
 
 freshVertex :: GlobalNode -> SynthState -> (G.Vertex, SynthState)
 freshVertex node st =
@@ -100,7 +102,14 @@ findSendActive participants outgoing contextVertex m =
       -- edges = [...list of outgoing edges...]
       edges = Map.findWithDefault [] contextVertex outgoing
       -- set of "active senders"
-      senders = S.fromList [s | (_, ContextSyncEdge {ceSender = s}) <- edges]
+      senders = S.fromList
+        [ s
+        | (_, e) <- edges
+        , s <- case e of
+            ContextSyncEdge{ceSender = s} -> [s]
+            ContextPayloadSyncEdge s _ _ -> [s]
+            _ -> []
+        ]
    -- we only care about "active senders"
    in case filter (\(p, _) -> p `S.member` senders) priorities of 
         (result : _) -> Just result 
@@ -130,9 +139,6 @@ synthNode cg participants outgoing contextVertex priorityIdx st =
           -- Back-edge for recursion.
           Right (existingV, st)
         Nothing -> do
-          -- Create a fresh global node.
-          let (gNode, st1) = freshVertex GlobalNode st
-              st2 = st1 { ssEnv = Map.insert (sender, contextVertex) gNode (ssEnv st1) }
           -- Collect all sync edges where this participant is the sender.
           let edges = Map.findWithDefault [] contextVertex outgoing
               syncEdges =
@@ -140,22 +146,46 @@ synthNode cg participants outgoing contextVertex priorityIdx st =
                 | (to, lbl@ContextSyncEdge{}) <- edges
                 , ceSender lbl == sender
                 ]
-          -- Sort by label (not needed, but sometimes helpful to have deterministic output).
-          let sortedEdges = sortOn (\(_, lbl) -> ceLabel lbl) syncEdges
-          -- Sanity check that all edges have the same receiver. 
-          -- Only very incorrectly built contexts should violate this...
-          let receivers = nub [ceReceiver lbl | (_, lbl) <- sortedEdges]
-          case receivers of
-            [] ->
+              payloadSyncEdges =
+                [ (to, lbl)
+                | (to, lbl@(ContextPayloadSyncEdge s _ _)) <- edges
+                , s == sender
+                ]
+          case (syncEdges, payloadSyncEdges) of
+            ([], []) ->
               Left (InternalError ("No sync edges found for send-active participant " ++ show sender ++ " at vertex " ++ show contextVertex))
-            [receiver] -> do
-              -- Recurse for each branch edge.
-              let n = length participants
-                  nextPriority = (senderIdx + 1) `mod` n
-              st3 <- foldlME (processBranch cg participants outgoing gNode sender receiver nextPriority) st2 sortedEdges
-              Right (gNode, st3)
-            _ ->
-              Left (MultipleReceivers contextVertex sender)
+            (_ : _, []) -> do
+              -- Branch synthesis (labeled messages).
+              let (gNode, st1) = freshVertex GlobalNode st
+                  st2 = st1 { ssEnv = Map.insert (sender, contextVertex) gNode (ssEnv st1) }
+              -- Sort by label for deterministic output.
+              let sortedEdges = sortOn (\(_, lbl) -> ceLabel lbl) syncEdges
+              -- Sanity check that all edges have the same receiver.
+              let receivers = nub [ceReceiver lbl | (_, lbl) <- sortedEdges]
+              case receivers of
+                [] ->
+                  Left (InternalError ("No sync edges found for send-active participant " ++ show sender ++ " at vertex " ++ show contextVertex))
+                [receiver] -> do
+                  let n = length participants
+                      nextPriority = (senderIdx + 1) `mod` n
+                  st3 <- foldlME (processBranch cg participants outgoing gNode sender receiver nextPriority) st2 sortedEdges
+                  Right (gNode, st3)
+                _ ->
+                  Left (MultipleReceivers contextVertex sender)
+            ([], _ : _) -> do
+              -- Payload synthesis (value-passing messages).
+              let (gNode, st1) = freshVertex GlobalPayloadNode st
+                  st2 = st1 { ssEnv = Map.insert (sender, contextVertex) gNode (ssEnv st1) }
+              case payloadSyncEdges of
+                [(to, ContextPayloadSyncEdge _ receiver pt)] -> do
+                  let n = length participants
+                      nextPriority = (senderIdx + 1) `mod` n
+                  (targetGlobalV, st3) <- synthNode cg participants outgoing to nextPriority st2
+                  let globalPayloadLbl = GlobalPayloadEdgeLabel sender receiver pt emptyRecVarHints
+                      st4 = st3 { ssPayloadEdges = ((gNode, targetGlobalV), globalPayloadLbl) : ssPayloadEdges st3 }
+                  Right (gNode, st4)
+                _ -> Left (InternalError "Multiple payload sync edges for same sender at same vertex")
+            _ -> Left (InternalError "Vertex mixes branch and payload sync edges for same sender")
 
 -- | Process a single branch edge during synthesis.
 processBranch ::
@@ -185,14 +215,16 @@ finaliseGlobalGraph :: G.Vertex -> SynthState -> GlobalGraph
 finaliseGlobalGraph startV st =
   let n = ssNextVertex st
       bounds = (0, n - 1)
-      graph = G.buildG bounds (map fst (ssEdges st))
+      graph = G.buildG bounds (map fst (ssEdges st) ++ map fst (ssPayloadEdges st))
       nodeTable = array bounds (Map.toList (ssNodes st))
       edgeLabels = collectEdges (ssEdges st)
+      payloadEdgeLabels = collectEdges (ssPayloadEdges st)
    in GlobalGraph
         { ggGraph = graph
         , ggStart = startV
         , ggNodes = nodeTable
         , ggEdgeLabels = edgeLabels
+        , ggPayloadEdges = payloadEdgeLabels
         , ggStartVarHints = emptyRecVarHints
         }
 

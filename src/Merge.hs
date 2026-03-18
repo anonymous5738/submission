@@ -2,9 +2,7 @@
 module Merge
   ( Merge
   , iso
-  , bisim
   , plainMerge
-  , bisimMerge
   , fullMerge
   ) where
 
@@ -13,6 +11,7 @@ import Automata
   , LocalDirection(..)
   , LocalGraph(..)
   , LocalNode(..)
+  , LocalPayloadEdgeLabel(..)
   , RecVarHints(..)
   )
 import Control.Applicative ((<|>))
@@ -35,14 +34,6 @@ plainMerge left right =
     then Just left
     else Nothing
 
--- | Plain coinductive merge: succeeds iff graphs are rooted-bisimilar;
--- returns the left graph.
-bisimMerge :: Merge
-bisimMerge left right =
-  if bisim left right
-    then Just left
-    else Nothing
-
 -- | Full merge for local graphs.
 --
 -- Rules:
@@ -61,6 +52,8 @@ fullMerge left right = do
           , miRightNodes = Map.fromList (assocs (lgNodes right))
           , miLeftOut = leftOut
           , miRightOut = rightOut
+          , miLeftPayloadOut = payloadOutgoingByVertex (lgPayloadEdges left)
+          , miRightPayloadOut = payloadOutgoingByVertex (lgPayloadEdges right)
           }
       start = Align (Just (lgStart left)) (Just (lgStart right))
       startHints = mergeHints (lgStartVarHints left) (lgStartVarHints right)
@@ -73,6 +66,7 @@ fullMerge left right = do
           , mbBwd = Map.empty
           , mbNodes = Map.empty
           , mbEdges = Set.empty
+          , mbPayloadEdges = Set.empty
           }
   (startOut, st) <- runStateT (visit input start) initState
   buildMergedGraph startHints startOut st
@@ -85,6 +79,8 @@ iso left right = go Map.empty Map.empty [(lgStart left, lgStart right)]
     rightNodes = Map.fromList (assocs (lgNodes right))
     leftOut = outgoingBySource (lgEdgeLabels left)
     rightOut = outgoingBySource (lgEdgeLabels right)
+    leftPayloadOut = payloadOutgoingBySource (lgPayloadEdges left)
+    rightPayloadOut = payloadOutgoingBySource (lgPayloadEdges right)
 
     go :: Map.Map G.Vertex G.Vertex -> Map.Map G.Vertex G.Vertex -> [(G.Vertex, G.Vertex)] -> Bool
     go _ _ [] = True
@@ -95,88 +91,26 @@ iso left right = go Map.empty Map.empty [(lgStart left, lgStart right)]
           case (Map.lookup x leftNodes, Map.lookup y rightNodes) of
             (Just nx, Just ny) ->
               nodeCompatible nx ny
-                && case (successorsByLabel leftOut x, successorsByLabel rightOut y) of
-                  (Just sx, Just sy) ->
-                    Map.keysSet sx == Map.keysSet sy
-                      && let fwd' = Map.insert x y fwd
-                             bwd' = Map.insert y x bwd
-                             next = [(sx Map.! l, sy Map.! l) | l <- Map.keys sx]
-                          in go fwd' bwd' (next ++ pending)
-                  _ -> False
+                && let fwd' = Map.insert x y fwd
+                       bwd' = Map.insert y x bwd
+                   in case (nx, ny) of
+                        (LocalPayloadSendNode{}, _) ->
+                          case (Map.lookup x leftPayloadOut, Map.lookup y rightPayloadOut) of
+                            (Just (_, lDst), Just (_, rDst)) -> go fwd' bwd' ((lDst, rDst) : pending)
+                            _ -> False
+                        (LocalPayloadRecvNode{}, _) ->
+                          case (Map.lookup x leftPayloadOut, Map.lookup y rightPayloadOut) of
+                            (Just (_, lDst), Just (_, rDst)) -> go fwd' bwd' ((lDst, rDst) : pending)
+                            _ -> False
+                        _ ->
+                          case (successorsByLabel leftOut x, successorsByLabel rightOut y) of
+                            (Just sx, Just sy) ->
+                              Map.keysSet sx == Map.keysSet sy
+                                && let next = [(sx Map.! l, sy Map.! l) | l <- Map.keys sx]
+                                   in go fwd' bwd' (next ++ pending)
+                            _ -> False
             _ -> False
         _ -> False
-
--- | Rooted bisimulation over local graphs.
---
--- Two graphs are bisimilar when there exists a relation containing their
--- start states such that related states have compatible node kinds and can
--- mutually match all labelled transitions.
-bisim :: LocalGraph -> LocalGraph -> Bool
-bisim left right =
-  case (outgoingByLabelMap (lgEdgeLabels left), outgoingByLabelMap (lgEdgeLabels right)) of
-    (Just leftOut, Just rightOut) ->
-      Set.member (lgStart left, lgStart right) relationFix
-      where
-        leftNodes = Map.fromList (assocs (lgNodes left))
-        rightNodes = Map.fromList (assocs (lgNodes right))
-        leftVertices = fmap fst (assocs (lgNodes left))
-        rightVertices = fmap fst (assocs (lgNodes right))
-
-        initialRelation =
-          Set.fromList
-            [ (x, y)
-            | x <- leftVertices
-            , y <- rightVertices
-            , pairCompatible leftOut rightOut leftNodes rightNodes x y
-            ]
-
-        relationFix = refine leftOut rightOut initialRelation
-    _ -> False
-
-pairCompatible ::
-  Map.Map G.Vertex (Map.Map Label (LocalEdgeLabel, G.Vertex)) ->
-  Map.Map G.Vertex (Map.Map Label (LocalEdgeLabel, G.Vertex)) ->
-  Map.Map G.Vertex LocalNode ->
-  Map.Map G.Vertex LocalNode ->
-  G.Vertex ->
-  G.Vertex ->
-  Bool
-pairCompatible leftOut rightOut leftNodes rightNodes x y =
-  case (Map.lookup x leftNodes, Map.lookup y rightNodes) of
-    (Just nx, Just ny) ->
-      nodeCompatible nx ny
-        && let sx = outAt leftOut x
-               sy = outAt rightOut y
-            in Map.keysSet sx == Map.keysSet sy
-    _ -> False
-
-refine ::
-  Map.Map G.Vertex (Map.Map Label (LocalEdgeLabel, G.Vertex)) ->
-  Map.Map G.Vertex (Map.Map Label (LocalEdgeLabel, G.Vertex)) ->
-  Set.Set (G.Vertex, G.Vertex) ->
-  Set.Set (G.Vertex, G.Vertex)
-refine leftOut rightOut rel =
-  let rel' = Set.filter (successorsStayIn leftOut rightOut rel) rel
-   in if rel' == rel
-        then rel
-        else refine leftOut rightOut rel'
-
-successorsStayIn ::
-  Map.Map G.Vertex (Map.Map Label (LocalEdgeLabel, G.Vertex)) ->
-  Map.Map G.Vertex (Map.Map Label (LocalEdgeLabel, G.Vertex)) ->
-  Set.Set (G.Vertex, G.Vertex) ->
-  (G.Vertex, G.Vertex) ->
-  Bool
-successorsStayIn leftOut rightOut rel (x, y) =
-  let sx = outAt leftOut x
-      sy = outAt rightOut y
-   in all
-        (\lbl ->
-            case (Map.lookup lbl sx, Map.lookup lbl sy) of
-              (Just (_, x'), Just (_, y')) -> Set.member (x', y') rel
-              _ -> False
-        )
-        (Map.keys sx)
 
 data Align = Align
   { alLeft :: Maybe G.Vertex
@@ -189,6 +123,8 @@ data MergeInput = MergeInput
   , miRightNodes :: Map.Map G.Vertex LocalNode
   , miLeftOut :: Map.Map G.Vertex (Map.Map Label (LocalEdgeLabel, G.Vertex))
   , miRightOut :: Map.Map G.Vertex (Map.Map Label (LocalEdgeLabel, G.Vertex))
+  , miLeftPayloadOut :: Map.Map G.Vertex (LocalPayloadEdgeLabel, G.Vertex)
+  , miRightPayloadOut :: Map.Map G.Vertex (LocalPayloadEdgeLabel, G.Vertex)
   }
 
 data MergeBuild = MergeBuild
@@ -199,9 +135,12 @@ data MergeBuild = MergeBuild
   , mbBwd :: Map.Map G.Vertex (Maybe G.Vertex)
   , mbNodes :: Map.Map G.Vertex LocalNode
   , mbEdges :: Set.Set (G.Edge, LocalEdgeLabel)
+  , mbPayloadEdges :: Set.Set (G.Edge, LocalPayloadEdgeLabel)
   }
 
-data TransitionPlan = TransitionPlan LocalEdgeLabel Align
+data TransitionPlan
+  = TransitionPlan LocalEdgeLabel Align
+  | PayloadTransitionPlan LocalPayloadEdgeLabel Align
 
 type MergeM a = StateT MergeBuild Maybe a
 
@@ -223,6 +162,9 @@ addTransition :: MergeInput -> G.Vertex -> TransitionPlan -> MergeM ()
 addTransition input from (TransitionPlan edgeLbl nextAlign) = do
   to <- visit input nextAlign
   modify (\s -> s {mbEdges = Set.insert ((from, to), edgeLbl) (mbEdges s)})
+addTransition input from (PayloadTransitionPlan edgeLbl nextAlign) = do
+  to <- visit input nextAlign
+  modify (\s -> s {mbPayloadEdges = Set.insert ((from, to), edgeLbl) (mbPayloadEdges s)})
 
 ensureOutVertex :: Align -> MergeM G.Vertex
 ensureOutVertex align = do
@@ -278,19 +220,33 @@ expandAlign input (Align left right) =
       ny <- Map.lookup y (miRightNodes input)
       sx <- pure (outAt (miLeftOut input) x)
       sy <- pure (outAt (miRightOut input) y)
-      validateOutgoing nx sx
-      validateOutgoing ny sy
-      mergeBoth nx ny sx sy
+      case (nx, ny) of
+        (LocalPayloadSendNode lp lpt, LocalPayloadSendNode rp rpt)
+          | lp == rp && lpt == rpt -> mergePayloadBoth input nx x y
+        (LocalPayloadRecvNode lp lpt, LocalPayloadRecvNode rp rpt)
+          | lp == rp && lpt == rpt -> mergePayloadBoth input nx x y
+        _ -> do
+          validateOutgoing nx sx
+          validateOutgoing ny sy
+          mergeBoth nx ny sx sy
     (Just x, Nothing) -> do
       nx <- Map.lookup x (miLeftNodes input)
       sx <- pure (outAt (miLeftOut input) x)
-      validateOutgoing nx sx
-      cloneLeft nx sx
+      case nx of
+        LocalPayloadSendNode _ _ -> clonePayload (miLeftPayloadOut input) nx x (\dst -> Align (Just dst) Nothing)
+        LocalPayloadRecvNode _ _ -> clonePayload (miLeftPayloadOut input) nx x (\dst -> Align (Just dst) Nothing)
+        _ -> do
+          validateOutgoing nx sx
+          cloneLeft nx sx
     (Nothing, Just y) -> do
       ny <- Map.lookup y (miRightNodes input)
       sy <- pure (outAt (miRightOut input) y)
-      validateOutgoing ny sy
-      cloneRight ny sy
+      case ny of
+        LocalPayloadSendNode _ _ -> clonePayload (miRightPayloadOut input) ny y (\dst -> Align Nothing (Just dst))
+        LocalPayloadRecvNode _ _ -> clonePayload (miRightPayloadOut input) ny y (\dst -> Align Nothing (Just dst))
+        _ -> do
+          validateOutgoing ny sy
+          cloneRight ny sy
     (Nothing, Nothing) -> Nothing
 
 mergeBoth ::
@@ -370,6 +326,8 @@ cloneLeft node outMap =
       cloneChoice (LocalSendNode peer) outMap (\dst -> Align (Just dst) Nothing)
     LocalRecvNode peer _ ->
       cloneChoice (LocalRecvNode peer) outMap (\dst -> Align (Just dst) Nothing)
+    LocalPayloadSendNode _ _ -> Nothing  -- handled in expandAlign
+    LocalPayloadRecvNode _ _ -> Nothing  -- handled in expandAlign
 
 cloneRight ::
   LocalNode ->
@@ -385,6 +343,8 @@ cloneRight node outMap =
       cloneChoice (LocalSendNode peer) outMap (\dst -> Align Nothing (Just dst))
     LocalRecvNode peer _ ->
       cloneChoice (LocalRecvNode peer) outMap (\dst -> Align Nothing (Just dst))
+    LocalPayloadSendNode _ _ -> Nothing  -- handled in expandAlign
+    LocalPayloadRecvNode _ _ -> Nothing  -- handled in expandAlign
 
 cloneChoice ::
   ([Label] -> LocalNode) ->
@@ -420,6 +380,8 @@ validateOutgoing node outMap =
     LocalRecvNode peer labels -> do
       guard (Set.fromList labels == Map.keysSet outMap)
       mapM_ (check Receive peer) (Map.toList outMap)
+    LocalPayloadSendNode _ _ -> guard (Map.null outMap)
+    LocalPayloadRecvNode _ _ -> guard (Map.null outMap)
   where
     check direction peer (lbl, (edge, _dst)) =
       guard (edgeMatches direction peer lbl edge)
@@ -451,12 +413,14 @@ buildMergedGraph startHints startV st = do
       vertices = [0 .. mbNext st - 1]
   nodes <- mapM (\v -> fmap (\node -> (v, node)) (Map.lookup v (mbNodes st))) vertices
   let edges = Set.toList (mbEdges st)
+      payloadEdgesList = Set.toList (mbPayloadEdges st)
   pure
     LocalGraph
-      { lgGraph = G.buildG bounds (fmap fst edges)
+      { lgGraph = G.buildG bounds (fmap fst edges ++ fmap fst payloadEdgesList)
       , lgStart = startV
       , lgNodes = array bounds nodes
       , lgEdgeLabels = collectEdges edges
+      , lgPayloadEdges = collectEdges payloadEdgesList
       , lgStartVarHints = startHints
       }
 
@@ -470,6 +434,8 @@ nodeCompatible left right =
     (LocalEndNode, LocalEndNode) -> True
     (LocalSendNode p _, LocalSendNode q _) -> p == q
     (LocalRecvNode p _, LocalRecvNode q _) -> p == q
+    (LocalPayloadSendNode p pt, LocalPayloadSendNode q qt) -> p == q && pt == qt
+    (LocalPayloadRecvNode p pt, LocalPayloadRecvNode q qt) -> p == q && pt == qt
     _ -> False
 
 successorsByLabel ::
@@ -509,6 +475,30 @@ outgoingByLabelMap =
             Just (edgeLbl', to')
               | edgeLbl' == edgeLbl && to' == to -> Just outMap
               | otherwise -> Nothing
+
+mergePayloadBoth :: MergeInput -> LocalNode -> G.Vertex -> G.Vertex -> Maybe (LocalNode, [TransitionPlan])
+mergePayloadBoth input node lx ry = do
+  (lEdge, lDst) <- Map.lookup lx (miLeftPayloadOut input)
+  (rEdge, rDst) <- Map.lookup ry (miRightPayloadOut input)
+  let mergedEdge = lEdge {lpeTargetHints = mergeHints (lpeTargetHints lEdge) (lpeTargetHints rEdge)}
+  pure (node, [PayloadTransitionPlan mergedEdge (Align (Just lDst) (Just rDst))])
+
+clonePayload :: Map.Map G.Vertex (LocalPayloadEdgeLabel, G.Vertex) -> LocalNode -> G.Vertex -> (G.Vertex -> Align) -> Maybe (LocalNode, [TransitionPlan])
+clonePayload payloadOut node v mkAlign = do
+  (edgeLbl, dst) <- Map.lookup v payloadOut
+  pure (node, [PayloadTransitionPlan edgeLbl (mkAlign dst)])
+
+payloadOutgoingBySource :: Map.Map G.Edge [LocalPayloadEdgeLabel] -> Map.Map G.Vertex (LocalPayloadEdgeLabel, G.Vertex)
+payloadOutgoingBySource =
+  Map.foldlWithKey'
+    (\acc (from, to) labels -> foldl' (\m lbl -> Map.insert from (lbl, to) m) acc labels)
+    Map.empty
+
+payloadOutgoingByVertex :: Map.Map G.Edge [LocalPayloadEdgeLabel] -> Map.Map G.Vertex (LocalPayloadEdgeLabel, G.Vertex)
+payloadOutgoingByVertex =
+  Map.foldlWithKey' addEdge Map.empty
+  where
+    addEdge acc (from, to) labels = foldl' (\m lbl -> Map.insert from (lbl, to) m) acc labels
 
 collectEdges :: Ord k => [(k, v)] -> Map.Map k [v]
 collectEdges = foldr (\(k, v) acc -> Map.insertWith (++) k [v] acc) Map.empty

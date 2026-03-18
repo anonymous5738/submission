@@ -21,8 +21,8 @@ import qualified Data.Set as Set
 import Syntax.AST
 import Syntax.AlphaEq (normalizeLocalBranchOrder)
 import Automata (LocalGraph(..), LocalNode(..), LocalDirection(..),
-                 LocalEdgeLabel(..), emptyRecVarHints,
-                 localGraphToType)
+                 LocalEdgeLabel(..), LocalPayloadEdgeLabel(..),
+                 emptyRecVarHints, localGraphToType)
 import Typecheck (ExprType(..), inferExprType)
 
 ------------------------------------------------------------------------
@@ -38,12 +38,15 @@ data InferError
   | InferConditionNotBool Expr ExprType
   | InferUnboundProcessVar TypeVar
   | InferGraphConversionError String
+  | InferUndeterminedPayloadType  -- ^ Payload type cannot be inferred (e.g. PRecvPayload, EVar in send)
   deriving (Eq, Show)
 
 data StructBound
   = BEnd
   | BSend Participant Label InferVar
   | BRecv Participant [(Label, InferVar)]
+  | BPayloadSend Participant PayloadType InferVar
+  | BPayloadRecv Participant PayloadType InferVar
 
 data Constraint
   = CStruct StructBound InferVar
@@ -117,6 +120,27 @@ generate env proc =
       emitConstraint (CStruct (BRecv p branchVars) xi)
       return xi
 
+    PSendPayload p e cont ->
+      case exprToPayloadType e of
+        Nothing -> do
+          emitError InferUndeterminedPayloadType
+          xi <- freshVar
+          emitConstraint (CStruct BEnd xi)
+          return xi
+        Just pt -> do
+          psi <- generate env cont
+          xi <- freshVar
+          emitConstraint (CStruct (BPayloadSend p pt psi) xi)
+          return xi
+
+    PRecvPayload _p _var _cont -> do
+      -- PRecvPayload does not carry a payload type annotation, so we
+      -- cannot determine it from the process alone.
+      emitError InferUndeterminedPayloadType
+      xi <- freshVar
+      emitConstraint (CStruct BEnd xi)
+      return xi
+
     PIf e thenP elseP -> do
       case inferExprType e of
         Left _err ->
@@ -130,6 +154,16 @@ generate env proc =
       emitConstraint (CVarBound psi1 xi)
       emitConstraint (CVarBound psi2 xi)
       return xi
+
+-- | Try to determine a PayloadType from an expression.
+-- Returns Nothing for expression variables and other undetermined cases.
+exprToPayloadType :: Expr -> Maybe PayloadType
+exprToPayloadType EUnit = Just PTUnit
+exprToPayloadType e =
+  case inferExprType e of
+    Right TInt  -> Just PTInt
+    Right TBool -> Just PTBool
+    _           -> Nothing
 
 ------------------------------------------------------------------------
 -- Phase 2: Graph-based constraint solving
@@ -162,6 +196,8 @@ data CanonBound
   = CBEnd
   | CBSend Participant Label ClassRep
   | CBRecv Participant [(Label, ClassRep)]
+  | CBPayloadSend Participant PayloadType ClassRep
+  | CBPayloadRecv Participant PayloadType ClassRep
 
 -- | Solver environment after equivalence-class computation.
 data SolveEnv = SolveEnv
@@ -195,6 +231,8 @@ canonBound :: (InferVar -> ClassRep) -> StructBound -> CanonBound
 canonBound _ BEnd = CBEnd
 canonBound f (BSend p l v) = CBSend p l (f v)
 canonBound f (BRecv p branches) = CBRecv p [(l, f v) | (l, v) <- branches]
+canonBound f (BPayloadSend p pt v) = CBPayloadSend p pt (f v)
+canonBound f (BPayloadRecv p pt v) = CBPayloadRecv p pt (f v)
 
 -- | Compute connected components via BFS.  Returns a map from each
 -- variable to the smallest variable in its component.
@@ -229,6 +267,8 @@ data NodeAction
   = NAEnd
   | NASend Participant (Map.Map Label (Set.Set ClassRep))
   | NARecv Participant (Map.Map Label (Set.Set ClassRep))
+  | NAPayloadSend Participant PayloadType (Set.Set ClassRep)
+  | NAPayloadRecv Participant PayloadType (Set.Set ClassRep)
 
 -- | Classify the canonical bounds of a node.
 classifyNode :: SolveEnv -> NodeKey -> Either InferError NodeAction
@@ -242,14 +282,16 @@ classifyNode env key =
 
 classifyCanonBounds :: [CanonBound] -> Either InferError NodeAction
 classifyCanonBounds bounds =
-  let ends  = [() | CBEnd <- bounds]
-      sends = [(p, l, v) | CBSend p l v <- bounds]
-      recvs = [(p, branches) | CBRecv p branches <- bounds]
-  in case (ends, sends, recvs) of
+  let ends     = [() | CBEnd <- bounds]
+      sends    = [(p, l, v) | CBSend p l v <- bounds]
+      recvs    = [(p, branches) | CBRecv p branches <- bounds]
+      plSends  = [(p, pt, v) | CBPayloadSend p pt v <- bounds]
+      plRecvs  = [(p, pt, v) | CBPayloadRecv p pt v <- bounds]
+  in case (ends, sends, recvs, plSends, plRecvs) of
     -- All end
-    (_:_, [], []) -> Right NAEnd
-    -- All sends
-    ([], _:_, []) ->
+    (_:_, [], [], [], []) -> Right NAEnd
+    -- All label sends
+    ([], _:_, [], [], []) ->
       let participants = map (\(p,_,_) -> p) sends
           p0 = head participants
       in if all (== p0) participants
@@ -259,8 +301,8 @@ classifyCanonBounds bounds =
                  Map.empty sends
            in Right (NASend p0 labelMap)
          else Left (InferParticipantMismatch p0 (head (filter (/= p0) participants)))
-    -- All recvs
-    ([], [], _:_) ->
+    -- All label recvs
+    ([], [], _:_, [], []) ->
       let participants = map fst recvs
           p0 = head participants
       in if all (== p0) participants
@@ -275,18 +317,44 @@ classifyCanonBounds bounds =
               then Left InferEmptyRecvIntersection
               else Right (NARecv p0 (Map.restrictKeys fullMap commonLabels))
          else Left (InferParticipantMismatch p0 (head (filter (/= p0) participants)))
-    -- Any mixture of end/send/recv is an error
+    -- All payload sends (must agree on participant and payload type)
+    ([], [], [], _:_, []) ->
+      let participants = map (\(p,_,_) -> p) plSends
+          payloads    = map (\(_,pt,_) -> pt) plSends
+          contReps    = map (\(_,_,v) -> v) plSends
+          p0 = head participants
+          pt0 = head payloads
+      in if all (== p0) participants && all (== pt0) payloads
+         then Right (NAPayloadSend p0 pt0 (Set.fromList contReps))
+         else Left InferActionMismatch
+    -- All payload recvs (must agree on participant and payload type)
+    ([], [], [], [], _:_) ->
+      let participants = map (\(p,_,_) -> p) plRecvs
+          payloads    = map (\(_,pt,_) -> pt) plRecvs
+          contReps    = map (\(_,_,v) -> v) plRecvs
+          p0 = head participants
+          pt0 = head payloads
+      in if all (== p0) participants && all (== pt0) payloads
+         then Right (NAPayloadRecv p0 pt0 (Set.fromList contReps))
+         else Left InferActionMismatch
+    -- Any mixture is an error
     _ -> Left InferActionMismatch
 
 -- | BFS state for building the graph.
 data BFSState = BFSState
-  { bfsNodeMap   :: Map.Map NodeKey G.Vertex
-  , bfsNextVtx   :: G.Vertex
-  , bfsNodes     :: [(G.Vertex, LocalNode)]
-  , bfsEdges     :: [(G.Edge, LocalEdgeLabel)]
-  , bfsQueue     :: [NodeKey]
-  , bfsErrors    :: [InferError]
+  { bfsNodeMap      :: Map.Map NodeKey G.Vertex
+  , bfsNextVtx      :: G.Vertex
+  , bfsNodes        :: [(G.Vertex, LocalNode)]
+  , bfsEdges        :: [(G.Edge, LocalEdgeLabel)]
+  , bfsPayloadEdges :: [(G.Edge, LocalPayloadEdgeLabel)]
+  , bfsQueue        :: [NodeKey]
+  , bfsErrors       :: [InferError]
   }
+
+-- | Successor descriptor: either a branch edge or a payload edge.
+data Successor
+  = BranchSucc Label LocalDirection Participant (Set.Set ClassRep)
+  | PayloadSucc LocalDirection Participant PayloadType (Set.Set ClassRep)
 
 -- | Build a 'LocalGraph' from constraints via BFS over class-rep sets.
 solveConstraints :: SolveEnv -> InferVar -> Either [InferError] LocalGraph
@@ -297,6 +365,7 @@ solveConstraints env rootVar =
         , bfsNextVtx = 1
         , bfsNodes = []
         , bfsEdges = []
+        , bfsPayloadEdges = []
         , bfsQueue = [rootKey]
         , bfsErrors = []
         }
@@ -306,15 +375,18 @@ solveConstraints env rootVar =
     [] ->
       let n = bfsNextVtx finalSt
           nodeArr = array (0, n - 1) (bfsNodes finalSt)
-          edgeList = map fst (bfsEdges finalSt)
-          graph = G.buildG (0, n - 1) edgeList
+          allEdges = map fst (bfsEdges finalSt) ++ map fst (bfsPayloadEdges finalSt)
+          graph = G.buildG (0, n - 1) allEdges
           edgeLabelMap = Map.fromListWith (++)
             [ (e, [lbl]) | (e, lbl) <- bfsEdges finalSt ]
+          payloadEdgeMap = Map.fromListWith (++)
+            [ (e, [lbl]) | (e, lbl) <- bfsPayloadEdges finalSt ]
       in Right LocalGraph
            { lgGraph = graph
            , lgStart = 0
            , lgNodes = nodeArr
            , lgEdgeLabels = edgeLabelMap
+           , lgPayloadEdges = payloadEdgeMap
            , lgStartVarHints = emptyRecVarHints
            }
 
@@ -338,37 +410,49 @@ bfsLoop env st =
           in bfsLoop env finalSt
 
 -- | Convert a NodeAction to a LocalNode and its outgoing successors.
-actionToNode :: NodeAction
-             -> (LocalNode, [(Label, LocalDirection, Participant, Set.Set ClassRep)])
+actionToNode :: NodeAction -> (LocalNode, [Successor])
 actionToNode NAEnd = (LocalEndNode, [])
 actionToNode (NASend p labelMap) =
   let labels = Map.keys labelMap
-      succs = [ (l, Send, p, reps) | (l, reps) <- Map.toList labelMap ]
+      succs = [ BranchSucc l Send p reps | (l, reps) <- Map.toList labelMap ]
   in (LocalSendNode p labels, succs)
 actionToNode (NARecv p labelMap) =
   let labels = Map.keys labelMap
-      succs = [ (l, Receive, p, reps) | (l, reps) <- Map.toList labelMap ]
+      succs = [ BranchSucc l Receive p reps | (l, reps) <- Map.toList labelMap ]
   in (LocalRecvNode p labels, succs)
+actionToNode (NAPayloadSend p pt reps) =
+  (LocalPayloadSendNode p pt, [PayloadSucc Send p pt reps])
+actionToNode (NAPayloadRecv p pt reps) =
+  (LocalPayloadRecvNode p pt, [PayloadSucc Receive p pt reps])
 
 -- | Process one successor edge during BFS.
-processSuccessor :: NodeKey
-                 -> (BFSState, ())
-                 -> (Label, LocalDirection, Participant, Set.Set ClassRep)
-                 -> (BFSState, ())
-processSuccessor srcKey (st, ()) (lbl, dir, peer, targetKey) =
+processSuccessor :: NodeKey -> (BFSState, ()) -> Successor -> (BFSState, ())
+processSuccessor srcKey (st, ()) succ_ =
   let srcVtx = bfsNodeMap st Map.! srcKey
+      targetKey = succTargetKey succ_
   in case Map.lookup targetKey (bfsNodeMap st) of
     Just targetVtx ->
-      let edge = ((srcVtx, targetVtx), LocalEdgeLabel dir peer lbl emptyRecVarHints)
-      in (st { bfsEdges = edge : bfsEdges st }, ())
+      let st' = addSuccEdge srcVtx targetVtx succ_ st
+      in (st', ())
     Nothing ->
       let targetVtx = bfsNextVtx st
-          edge = ((srcVtx, targetVtx), LocalEdgeLabel dir peer lbl emptyRecVarHints)
-      in (st { bfsNodeMap = Map.insert targetKey targetVtx (bfsNodeMap st)
-             , bfsNextVtx = targetVtx + 1
-             , bfsEdges = edge : bfsEdges st
-             , bfsQueue = bfsQueue st ++ [targetKey]
-             }, ())
+          st' = addSuccEdge srcVtx targetVtx succ_ st
+      in (st' { bfsNodeMap = Map.insert targetKey targetVtx (bfsNodeMap st')
+              , bfsNextVtx = targetVtx + 1
+              , bfsQueue = bfsQueue st' ++ [targetKey]
+              }, ())
+
+succTargetKey :: Successor -> Set.Set ClassRep
+succTargetKey (BranchSucc _ _ _ reps) = reps
+succTargetKey (PayloadSucc _ _ _ reps) = reps
+
+addSuccEdge :: G.Vertex -> G.Vertex -> Successor -> BFSState -> BFSState
+addSuccEdge srcVtx targetVtx (BranchSucc lbl dir peer _) st =
+  let edge = ((srcVtx, targetVtx), LocalEdgeLabel dir peer lbl emptyRecVarHints)
+  in st { bfsEdges = edge : bfsEdges st }
+addSuccEdge srcVtx targetVtx (PayloadSucc dir peer pt _) st =
+  let edge = ((srcVtx, targetVtx), LocalPayloadEdgeLabel dir peer pt emptyRecVarHints)
+  in st { bfsPayloadEdges = edge : bfsPayloadEdges st }
 
 ------------------------------------------------------------------------
 -- Phase 3: Top-level

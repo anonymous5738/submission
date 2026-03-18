@@ -83,6 +83,9 @@ checkGlobal env gtype =
         Nothing -> [FreeTypeVar v]
         Just guarded ->
           if guarded then [] else [UnguardedTypeVar v]
+    GPayload sender receiver _ body ->
+      [ SelfCommunication sender | sender == receiver ]
+      ++ checkGlobal (Env.map (const True) env) body
     GRec v body ->
       checkGlobal (Env.insert v False env) body
     GEnd -> []
@@ -98,6 +101,10 @@ checkLocal env ltype =
       branchChecks branches env
     LRecv _ branches ->
       branchChecks branches env
+    LPayloadSend _ _ cont ->
+      checkLocal (Env.map (const True) env) cont
+    LPayloadRecv _ _ cont ->
+      checkLocal (Env.map (const True) env) cont
     LVar v ->
       case Env.lookup v env of
         Nothing -> [FreeTypeVar v]
@@ -152,6 +159,10 @@ checkProc env proc =
           env' = Env.map (const True) env
           branchErrs = concatMap (checkProc env' . snd) (NE.toList branches)
       in dupErrs ++ branchErrs
+    PSendPayload _ _ cont ->
+      checkProc (Env.map (const True) env) cont
+    PRecvPayload _ _ cont ->
+      checkProc (Env.map (const True) env) cont
     PIf _ p q ->
       checkProc env p ++ checkProc env q
     PVar v ->
