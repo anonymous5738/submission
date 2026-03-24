@@ -212,7 +212,7 @@ runSingleLocalBenchmark useMpstk runs timeoutSecs mpstkSem ex = do
                       , Just lt <- [Map.lookup p context]
                       ]
                 pure $ checkLiveness cg == Right ()
-              else pure (s || lp)
+              else pure lp
             pure (Just s, Just d, Just l, mTime)
       case resultE of
         Left (e :: SomeException) -> do

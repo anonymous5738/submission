@@ -10,6 +10,7 @@ module Balanced
 import Automata
   ( GlobalEdgeLabel(..)
   , GlobalGraph(..)
+  , GlobalPayloadEdgeLabel(..)
   )
 import Control.DeepSeq (NFData)
 import Data.Foldable (foldl')
@@ -73,7 +74,9 @@ ownParticipants ::
   Set.Set G.Vertex ->
   Map.Map G.Vertex ParticipantSet
 ownParticipants gg reachable =
-  foldl' addEdgeParticipants initial (Map.toList (ggEdgeLabels gg))
+  foldl' addPayloadParticipants
+    (foldl' addEdgeParticipants initial (Map.toList (ggEdgeLabels gg)))
+    (Map.toList (ggPayloadEdges gg))
   where
     initial = Map.fromSet (const Set.empty) reachable
 
@@ -88,16 +91,36 @@ ownParticipants gg reachable =
            in Map.insertWith Set.union from participants acc
       | otherwise = acc
 
+    addPayloadParticipants acc ((from, _), labels)
+      | from `Set.member` reachable =
+          let participants =
+                Set.fromList
+                  [ p
+                  | lbl <- labels
+                  , p <- [gpeSender lbl, gpeReceiver lbl]
+                  ]
+           in Map.insertWith Set.union from participants acc
+      | otherwise = acc
+
 reachableChildren ::
   GlobalGraph ->
   Set.Set G.Vertex ->
   Map.Map G.Vertex (Set.Set G.Vertex)
 reachableChildren gg reachable =
-  foldl' addEdge initial (Map.toList (ggEdgeLabels gg))
+  foldl' addPayloadEdge
+    (foldl' addEdge initial (Map.toList (ggEdgeLabels gg)))
+    (Map.toList (ggPayloadEdges gg))
   where
     initial = Map.fromSet (const Set.empty) reachable
 
     addEdge acc ((from, to), labels)
+      | from `Set.member` reachable
+          && to `Set.member` reachable
+          && not (null labels) =
+          Map.insertWith Set.union from (Set.singleton to) acc
+      | otherwise = acc
+
+    addPayloadEdge acc ((from, to), labels)
       | from `Set.member` reachable
           && to `Set.member` reachable
           && not (null labels) =

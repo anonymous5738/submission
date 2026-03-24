@@ -179,6 +179,14 @@ appendixRefForName name
   | name == "G_if"              = Just "\\exampletabref{j}"
   | name == "G_ring"            = Just "\\exampletabref{k}"
   | name == "G_adder"           = Just "\\exampletabref{l}"
+  | name == "G_company"         = Just "\\exampletabref{m}"
+  | name == "G_ow"              = Just "\\exampletabref{n}"
+  | name == "G_dl"              = Just "\\exampletabref{o}"
+  | name == "G_ev"              = Just "\\exampletabref{p}"
+  | name == "G_cf-2"            = Just "\\exampletabref{q}"
+  | name == "G_cf-3"            = Just "\\exampletabref{r}"
+  | name == "G_cf-4"            = Just "\\exampletabref{s}"
+  | name == "G_cf-5"            = Just "\\exampletabref{t}"
   | "BinCtr-" `isPrefixOf` name = Just "Example~\\ref{ex:binary-counter}"
   | otherwise                   = Nothing
 

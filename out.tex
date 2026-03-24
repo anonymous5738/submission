@@ -1,0 +1,118 @@
+\begin{table}[t]
+\centering
+\caption{Top-down projection benchmarks: median times over $10$ runs.
+  Here $|G|$ is the size of the global type, \#p is its
+  number of participants, Balanced reports whether $G$ is
+  balanced ($\checkmark$) or not ($\times$), with the accompanying
+  time giving the cost of the balancedness check, and
+  $|\Delta_{\textsf{pro}}|$ is the size of the projected local context.
+  The Citation column gives the source citation and, where available,
+  the corresponding entry in Appendix Table~\ref{tab:example-global-types}.
+  IP = inductive plain, IF = inductive full, CP = coinductive plain,
+  and CF = coinductive full; each projection column shows the runtime
+  when projection succeeds and $\times$ when that algorithm fails.}
+\label{tab:global-benchmarks}
+\resizebox{\textwidth}{!}{
+\scriptsize
+\begin{tabular}{l l r r l r r r r r}
+\toprule
+Example & Citation & $|G|$ & \#p & Balanced & $|\Delta_{\textsf{pro}}|$ & IP & IF & CP & CF \\
+\midrule
+Simple Travel Agency & \cite[Fig.~1(a)]{YoshidaGheri2020}; \exampletabref{g} & 9 & 2 & {\color{green!50!black}$\checkmark$} 13.0\,\textmu s & 18 & 42.0\,\textmu s & 40.0\,\textmu s & 54.0\,\textmu s & 48.0\,\textmu s \\
+Better Travel Agency & \cite[Fig.~1(b)]{YoshidaGheri2020}; \exampletabref{h} & 12 & 2 & {\color{green!50!black}$\checkmark$} 15.0\,\textmu s & 24 & 61.0\,\textmu s & 51.0\,\textmu s & 67.0\,\textmu s & 59.0\,\textmu s \\
+OAuth & \cite[Ex.~1]{Scalas2019}; \exampletabref{b} & 13 & 3 & {\color{green!50!black}$\checkmark$} 18.0\,\textmu s & 27 & {\color{red!70!black}$\times$} & 80.0\,\textmu s & {\color{red!70!black}$\times$} & 69.0\,\textmu s \\
+Two Buyer & \cite[Ex.~2]{Scalas2019}; \exampletabref{c} & 20 & 3 & {\color{red!70!black}$\times$} 32.0\,\textmu s & 41 & {\color{red!70!black}$\times$} & 96.0\,\textmu s & {\color{red!70!black}$\times$} & 100.0\,\textmu s \\
+Inductive Plain & \cite[Ex.~4.8]{thien-nobuko-popl-25}; \exampletabref{i} & 10 & 3 & {\color{green!50!black}$\checkmark$} 11.0\,\textmu s & 20 & 48.0\,\textmu s & 47.0\,\textmu s & 42.0\,\textmu s & 41.0\,\textmu s \\
+Inductive Full & \cite[Ex.~4.8]{thien-nobuko-popl-25}; \exampletabref{j} & 10 & 3 & {\color{green!50!black}$\checkmark$} 11.0\,\textmu s & 22 & {\color{red!70!black}$\times$} & 50.0\,\textmu s & {\color{red!70!black}$\times$} & 51.0\,\textmu s \\
+Semantic Recursion & \cite{Tirore2023}; \exampletabref{f} & 9 & 4 & {\color{green!50!black}$\checkmark$} 14.0\,\textmu s & 20 & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & 48.0\,\textmu s & 46.0\,\textmu s \\
+Ring & \cite{Castro2026}; \exampletabref{k} & 15 & 3 & {\color{green!50!black}$\checkmark$} 16.0\,\textmu s & 31 & {\color{red!70!black}$\times$} & 74.0\,\textmu s & {\color{red!70!black}$\times$} & 57.0\,\textmu s \\
+Odd-Even & \cite[Ex.~2.1]{Li2023}; \exampletabref{a} & 33 & 3 & {\color{green!50!black}$\checkmark$} 29.0\,\textmu s & 68 & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & 135.0\,\textmu s \\
+Monte Carlo Gmap & --- & 18 & 4 & {\color{green!50!black}$\checkmark$} 37.0\,\textmu s & 44 & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & 103.0\,\textmu s \\
+Monte Carlo Gmin & --- & 15 & 4 & {\color{green!50!black}$\checkmark$} 35.0\,\textmu s & 32 & 70.0\,\textmu s & 65.0\,\textmu s & 71.0\,\textmu s & 71.0\,\textmu s \\
+Independent Pairs & --- & 13 & 4 & {\color{green!50!black}$\checkmark$} 17.0\,\textmu s & 20 & 64.0\,\textmu s & 63.0\,\textmu s & 44.0\,\textmu s & 44.0\,\textmu s \\
+Company Communication & \cite[Fig.~9]{DBLP:conf/ecoop/GheriLSTY22}; \exampletabref{m} & 30 & 6 & {\color{green!50!black}$\checkmark$} 73.0\,\textmu s & 68 & {\color{red!70!black}$\times$} & 181.0\,\textmu s & {\color{red!70!black}$\times$} & 157.0\,\textmu s \\
+Online Wallet & \cite[Fig.~1]{DBLP:conf/rv/NeykovaYH13}; \exampletabref{n} & 26 & 3 & {\color{green!50!black}$\checkmark$} 45.0\,\textmu s & 53 & {\color{red!70!black}$\times$} & 157.0\,\textmu s & {\color{red!70!black}$\times$} & 144.0\,\textmu s \\
+Adder & \cite[Fig.~1(a)]{FASE16EndpointAPI}; \exampletabref{l} & 13 & 2 & {\color{green!50!black}$\checkmark$} 15.0\,\textmu s & 26 & 59.0\,\textmu s & 51.0\,\textmu s & 57.0\,\textmu s & 57.0\,\textmu s \\
+Distributed Logging & \cite[Fig.~16]{DBLP:conf/ecoop/LagaillardieNY22}; \exampletabref{o} & 17 & 2 & {\color{green!50!black}$\checkmark$} 18.0\,\textmu s & 34 & 86.0\,\textmu s & 66.0\,\textmu s & 83.0\,\textmu s & 88.0\,\textmu s \\
+E-Voting & \cite{DBLP:conf/ecoop/LagaillardieNY22}; \exampletabref{p} & 22 & 2 & {\color{green!50!black}$\checkmark$} 24.0\,\textmu s & 44 & 93.0\,\textmu s & 92.0\,\textmu s & 106.0\,\textmu s & 101.0\,\textmu s \\
+MapReduce(5) & \cite[Ex.~3]{Scalas2019}; \exampletabref{d} & 25 & 5 & {\color{green!50!black}$\checkmark$} 66.0\,\textmu s & 62 & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & 149.0\,\textmu s \\
+MapReduce(6) & \cite[Ex.~3]{Scalas2019}; \exampletabref{d} & 31 & 6 & {\color{green!50!black}$\checkmark$} 107.0\,\textmu s & 78 & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & 187.0\,\textmu s \\
+MapReduce(7) & \cite[Ex.~3]{Scalas2019}; \exampletabref{d} & 37 & 7 & {\color{green!50!black}$\checkmark$} 150.0\,\textmu s & 94 & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & 230.0\,\textmu s \\
+Independent Workers(7) & \cite[Ex.~4]{Scalas2019}; \exampletabref{e} & 59 & 7 & {\color{green!50!black}$\checkmark$} 213.0\,\textmu s & 91 & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & 326.0\,\textmu s \\
+Independent Workers(10) & \cite[Ex.~4]{Scalas2019}; \exampletabref{e} & 215 & 10 & {\color{green!50!black}$\checkmark$} {\color{blue!70!black}1.5\,ms} & 169 & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & {\color{blue!70!black}1.4\,ms} \\
+Coinductive Full(2) & \cite[Thm.~4.24]{thien-nobuko-popl-25}; \exampletabref{q} & 25 & 3 & {\color{green!50!black}$\checkmark$} 20.0\,\textmu s & 62 & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & 122.0\,\textmu s \\
+Coinductive Full(3) & \cite[Thm.~4.24]{thien-nobuko-popl-25}; \exampletabref{r} & 42 & 3 & {\color{green!50!black}$\checkmark$} 32.0\,\textmu s & 217 & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & 394.0\,\textmu s \\
+Coinductive Full(4) & \cite[Thm.~4.24]{thien-nobuko-popl-25}; \exampletabref{s} & 63 & 3 & {\color{green!50!black}$\checkmark$} 44.0\,\textmu s & 1312 & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & {\color{blue!70!black}3.1\,ms} \\
+Coinductive Full(5) & \cite[Thm.~4.24]{thien-nobuko-popl-25}; \exampletabref{t} & 92 & 3 & {\color{green!50!black}$\checkmark$} 70.0\,\textmu s & 14239 & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & {\color{blue!70!black}152.6\,ms} \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Bottom-up synthesis benchmarks: median times over $10$ runs.
+  Here $|\Delta|$ is the size of the input local context,
+  \#p is its number of participants,
+  $\textsf{safe}$, $\textsf{df}$, and $\textsf{live}$ report whether
+  the context is safe, deadlock-free, and live respectively
+  ($\checkmark$/$\times$),
+  {\sf mpstk} is the time taken to check these properties,
+  $|G_{\textsf{inf}}|$ is the size of the synthesised global type,
+  Balanced reports whether the synthesised
+  global type is balanced ($\checkmark$/$\times$), and
+  Synth.\ is the synthesis time.
+  The Citation column gives the source citation and, where available,
+  the corresponding appendix reference, including
+  Table~\ref{tab:example-global-types} and
+  Example~\ref{ex:binary-counter}.
+  Entries marked ``---'' indicate cases where the tool exceeded available
+  resources.}
+\label{tab:local-benchmarks}
+\resizebox{\textwidth}{!}{
+\scriptsize
+\begin{tabular}{l l r r c c c r r c r}
+\toprule
+Example & Citation & $|\Delta|$ & \#p & $\textsf{safe}$ & $\textsf{df}$ & $\textsf{live}$ & mpstk & $|G_{\textsf{inf}}|$ & Balanced & Synth. \\
+\midrule
+Two Buyer & \cite[Ex.~2]{Scalas2019}; \exampletabref{c} & 41 & 3 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{red!70!black}$\times$} & {\color{blue!70!black}240.0\,ms} & 20 & {\color{red!70!black}$\times$} & 178.0\,\textmu s \\
+MapReduce(5) & \cite[Ex.~3]{Scalas2019}; \exampletabref{d} & 62 & 5 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}280.0\,ms} & 35 & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}18.1\,ms} \\
+MapReduce(6) & \cite[Ex.~3]{Scalas2019}; \exampletabref{d} & 78 & 6 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}370.0\,ms} & 45 & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}179.6\,ms} \\
+MapReduce(7) & \cite[Ex.~3]{Scalas2019}; \exampletabref{d} & 94 & 7 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}590.0\,ms} & 55 & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}1.66\,s} \\
+OAuth & \cite[Ex.~1]{Scalas2019}; \exampletabref{b} & 27 & 3 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}230.0\,ms} & 13 & {\color{green!50!black}$\checkmark$} & 96.0\,\textmu s \\
+Independent Workers(7) & \cite[Ex.~4]{Scalas2019}; \exampletabref{e} & 61 & 7 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}320.0\,ms} & 73 & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}131.5\,ms} \\
+Independent Workers(10) & \cite[Ex.~4]{Scalas2019}; \exampletabref{e} & 91 & 10 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}1.87\,s} & --- & --- & --- \\
+Inductive Plain & \cite[Ex.~4.8]{thien-nobuko-popl-25}; \exampletabref{i} & 20 & 3 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}230.0\,ms} & 10 & {\color{green!50!black}$\checkmark$} & 24.0\,\textmu s \\
+Inductive Full & \cite[Ex.~4.8]{thien-nobuko-popl-25}; \exampletabref{j} & 27 & 3 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}240.0\,ms} & 16 & {\color{green!50!black}$\checkmark$} & 45.0\,\textmu s \\
+Semantic Recursion & \cite{Tirore2023}; \exampletabref{f} & 20 & 4 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}230.0\,ms} & 7 & {\color{green!50!black}$\checkmark$} & 21.0\,\textmu s \\
+Ring & \cite{Castro2026}; \exampletabref{k} & 31 & 3 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}240.0\,ms} & 15 & {\color{green!50!black}$\checkmark$} & 95.0\,\textmu s \\
+Odd-Even & \cite[Ex.~2.1]{Li2023}; \exampletabref{a} & 68 & 3 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}240.0\,ms} & 43 & {\color{green!50!black}$\checkmark$} & 535.0\,\textmu s \\
+Monte Carlo Gmap & --- & 42 & 4 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}250.0\,ms} & 18 & {\color{green!50!black}$\checkmark$} & 434.0\,\textmu s \\
+Monte Carlo Gmin & --- & 39 & 4 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}250.0\,ms} & 15 & {\color{green!50!black}$\checkmark$} & 407.0\,\textmu s \\
+Independent Pairs & --- & 24 & 4 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}230.0\,ms} & 13 & {\color{green!50!black}$\checkmark$} & 80.0\,\textmu s \\
+Online Wallet & \cite[Fig.~1]{DBLP:conf/rv/NeykovaYH13}; \exampletabref{n} & 53 & 3 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}280.0\,ms} & 26 & {\color{green!50!black}$\checkmark$} & 810.0\,\textmu s \\
+Adder & \cite[Fig.~1(a)]{FASE16EndpointAPI}; \exampletabref{l} & 26 & 2 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}270.0\,ms} & 13 & {\color{green!50!black}$\checkmark$} & 44.0\,\textmu s \\
+Distributed Logging & \cite[Fig.~16]{DBLP:conf/ecoop/LagaillardieNY22}; \exampletabref{o} & 34 & 2 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}260.0\,ms} & 17 & {\color{green!50!black}$\checkmark$} & 67.0\,\textmu s \\
+E-Voting & \cite{DBLP:conf/ecoop/LagaillardieNY22}; \exampletabref{p} & 44 & 2 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}220.0\,ms} & 22 & {\color{green!50!black}$\checkmark$} & 126.0\,\textmu s \\
+$\ctx[5]$ & \cite[Fig.~4]{thien-nobuko-popl-25} & 21 & 3 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}230.0\,ms} & 9 & {\color{green!50!black}$\checkmark$} & 45.0\,\textmu s \\
+$\ctx[6]$ & \cite[Fig.~4]{thien-nobuko-popl-25} & 10 & 2 & {\color{red!70!black}$\times$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}240.0\,ms} & 3 & {\color{green!50!black}$\checkmark$} & 26.0\,\textmu s \\
+$\ctx[7]$ & \cite[Fig.~4]{thien-nobuko-popl-25} & 17 & 5 & {\color{red!70!black}$\times$} & {\color{green!50!black}$\checkmark$} & {\color{red!70!black}$\times$} & {\color{blue!70!black}250.0\,ms} & 4 & {\color{green!50!black}$\checkmark$} & 16.0\,\textmu s \\
+$\ctx[8]$ & \cite[Fig.~4]{thien-nobuko-popl-25} & 3 & 1 & {\color{green!50!black}$\checkmark$} & {\color{red!70!black}$\times$} & {\color{red!70!black}$\times$} & {\color{blue!70!black}260.0\,ms} & 1 & {\color{green!50!black}$\checkmark$} & 4.0\,\textmu s \\
+$\ctx[9]$ & \cite[Fig.~4]{thien-nobuko-popl-25} & 11 & 3 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{red!70!black}$\times$} & {\color{blue!70!black}270.0\,ms} & 4 & {\color{green!50!black}$\checkmark$} & 23.0\,\textmu s \\
+Coinductive Full(2) & \cite[Thm.~4.24]{thien-nobuko-popl-25}; \exampletabref{q} & 62 & 3 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}300.0\,ms} & 51 & {\color{green!50!black}$\checkmark$} & 292.0\,\textmu s \\
+Coinductive Full(3) & \cite[Thm.~4.24]{thien-nobuko-popl-25}; \exampletabref{r} & 217 & 3 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}570.0\,ms} & 314 & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}7.1\,ms} \\
+Coinductive Full(4) & \cite[Thm.~4.24]{thien-nobuko-popl-25}; \exampletabref{s} & 1312 & 3 & --- & --- & --- & --- & 2681 & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}142.3\,ms} \\
+Coinductive Full(5) & \cite[Thm.~4.24]{thien-nobuko-popl-25}; \exampletabref{t} & 14239 & 3 & --- & --- & --- & --- & --- & --- & --- \\
+Coinductive Full Optimised(2) & \cite[Thm.~4.24]{thien-nobuko-popl-25} & 40 & 3 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}240.0\,ms} & 25 & {\color{green!50!black}$\checkmark$} & 97.0\,\textmu s \\
+Coinductive Full Optimised(3) & \cite[Thm.~4.24]{thien-nobuko-popl-25} & 61 & 3 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}250.0\,ms} & 42 & {\color{green!50!black}$\checkmark$} & 216.0\,\textmu s \\
+Coinductive Full Optimised(4) & \cite[Thm.~4.24]{thien-nobuko-popl-25} & 86 & 3 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}290.0\,ms} & 63 & {\color{green!50!black}$\checkmark$} & 497.0\,\textmu s \\
+Coinductive Full Optimised(5) & \cite[Thm.~4.24]{thien-nobuko-popl-25} & 119 & 3 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}270.0\,ms} & 92 & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}1.1\,ms} \\
+Binary Counter(2) & Example~\ref{ex:binary-counter} & 50 & 4 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}280.0\,ms} & 49 & {\color{green!50!black}$\checkmark$} & 122.0\,\textmu s \\
+Binary Counter(3) & Example~\ref{ex:binary-counter} & 69 & 5 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}370.0\,ms} & 117 & {\color{green!50!black}$\checkmark$} & 484.0\,\textmu s \\
+Binary Counter(4) & Example~\ref{ex:binary-counter} & 88 & 6 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}1.01\,s} & 269 & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}4.8\,ms} \\
+Binary Counter(5) & Example~\ref{ex:binary-counter} & 107 & 7 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}4.60\,s} & 605 & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}38.7\,ms} \\
+QBF(3v3c) & \cite{thien-nobuko-popl-25} & 390 & 8 & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{green!50!black}$\checkmark$} & {\color{blue!70!black}1.41\,s} & --- & --- & --- \\
+\bottomrule
+\end{tabular}
+}
+\end{table}

@@ -230,19 +230,35 @@ completeGlobalHints gg =
         , hcStartHints = ggStartVarHints gg
         , hcTransitionHints = hintsByTransition
         }
-    finalState = dfsComplete adjacency (ggStart gg) initial
+    -- Precompute which vertices are in non-trivial SCCs (participate in cycles)
+    sccCyclic = sccCyclicVertices transitions
+    finalState = dfsComplete sccCyclic adjacency (ggStart gg) initial
     -- Propagate binders to ALL non-self-loop edges targeting cyclic vertices.
     -- The DFS only places binders on its discovery edges, but graphToType
     -- explores all paths, so it can reach cyclic vertices via other edges.
     cyclicVars = buildCyclicVarMap (ggStart gg) (hcStartHints finalState) (hcTransitionHints finalState) transitions
     finalState' = propagateGlobalCyclicBinders (ggStart gg) transitions cyclicVars finalState
 
+-- | Compute the set of vertices that participate in non-trivial SCCs (cycles).
+sccCyclicVertices ::
+  [(G.Vertex, G.Vertex, Either Label PayloadType, RecVarHints)] ->
+  Set.Set G.Vertex
+sccCyclicVertices transitions =
+  let adj = foldl' (\acc (from, to, _, _) -> Map.insertWith (++) from [to] acc) Map.empty transitions
+      allVerts = Set.toList $ foldl' (\s (from, to, _, _) -> Set.insert from (Set.insert to s)) Set.empty transitions
+      sccs = G.stronglyConnComp [(v, v, Map.findWithDefault [] v adj) | v <- allVerts]
+   in Set.fromList $ concatMap extractCyclic sccs
+  where
+    extractCyclic (G.AcyclicSCC _) = []
+    extractCyclic (G.CyclicSCC vs) = vs
+
 dfsComplete ::
+  Set.Set G.Vertex ->
   Map.Map G.Vertex [(TransitionId, G.Vertex)] ->
   G.Vertex ->
   HintCompletionState ->
   HintCompletionState
-dfsComplete adjacency v state
+dfsComplete sccCyclic adjacency v state
   | v `Set.member` hcSeen state = state
   | otherwise =
       let entered = state {hcSeen = Set.insert v (hcSeen state)}
@@ -253,9 +269,17 @@ dfsComplete adjacency v state
     step acc (transitionId, succV)
       | succV `Map.member` hcPathEntry acc =
           ensureEntryHintForAncestor succV acc
-      | succV `Set.member` hcSeen acc = acc
+      | succV `Set.member` hcSeen acc =
+          -- Cross-edge to already-visited vertex.  If succV is in a cycle
+          -- (non-trivial SCC), globalGraphToType's all-paths DFS may enter
+          -- it fresh from a different path and discover the cycle.  Ensure
+          -- the cross-edge transition carries a binder for succV.
+          if succV `Set.member` sccCyclic
+            then ensureCrossEdgeCycleHint succV transitionId acc
+            else acc
       | otherwise =
           dfsComplete
+            sccCyclic
             adjacency
             succV
             (acc {hcPathEntry = Map.insert succV (Just transitionId) (hcPathEntry acc)})
@@ -289,6 +313,27 @@ ensureEntryHintForAncestor ancestor state =
                       { hcTransitionHints =
                           Map.insert tid (addBinderHint tv existing) (hcTransitionHints state')
                       }
+
+-- | Handle a cross-edge to an already-visited vertex that is in a cycle.
+-- The cross-edge transition itself needs a binder so that globalGraphToType
+-- can introduce a rec variable when entering succV from this new path.
+ensureCrossEdgeCycleHint :: G.Vertex -> TransitionId -> HintCompletionState -> HintCompletionState
+ensureCrossEdgeCycleHint _succV transitionId state =
+  let existing = Map.findWithDefault emptyRecVarHints transitionId (hcTransitionHints state)
+   in if not (null (rvhBinders existing))
+        then state
+        else case rvhPreferredVar existing of
+          Just tv ->
+            state
+              { hcTransitionHints =
+                  Map.insert transitionId (addBinderHint tv existing) (hcTransitionHints state)
+              }
+          Nothing ->
+            let (tv, state') = freshHint state
+             in state'
+                  { hcTransitionHints =
+                      Map.insert transitionId (addBinderHint tv existing) (hcTransitionHints state')
+                  }
 
 freshHint :: HintCompletionState -> (TypeVar, HintCompletionState)
 freshHint state =

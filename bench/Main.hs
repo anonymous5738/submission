@@ -258,6 +258,7 @@ renderLocalSummary results =
             ++ padR 6 "|D|"
             ++ padR 6 "|dom|"
             ++ padR 6 "safe"
+            ++ padR 6 "df"
             ++ padR 6 "live"
             ++ padR 10 "mpstk"
             ++ padR 8 "|G_i|"
@@ -273,6 +274,7 @@ localSummaryRow br =
     ++ padR 6 (show (lbrContextSize br))
     ++ padR 6 (show (lbrNumParticipants br))
     ++ padR 6 (fmtBoolH (lbrSafe br))
+    ++ padR 6 (fmtBoolH (lbrDeadlockFree br))
     ++ padR 6 (fmtBoolH (lbrLive br))
     ++ padR 10 (maybe "---" formatTimeHuman (lbrMpstkTime br))
     ++ padR 8 (maybe "---" show (lbrInferredSize br))

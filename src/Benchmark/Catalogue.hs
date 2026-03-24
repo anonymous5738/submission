@@ -73,6 +73,9 @@ globalExamples =
   , gGItp23
   , gGRing
   , gGOddEven
+  , gMonteCarloMap
+  , gMonteCarloMin
+  , gIndependentPairs
   , gCompany
   , gOnlineWallet
   , gAdder
@@ -139,8 +142,8 @@ gTwoBuyer = GlobalExample
   , geDisplayName = "Two Buyer"
   , geCitation = Just scalasYoshida2019 { citeRef = Just "Ex.~2" }
   , geGlobalSource =
-      "rec t . a -> s { query: a -> s [string]; s -> a { price: s -> a [int]; "
-        ++ "a -> b { "
+      "a -> s { query: a -> s [string]; s -> a { price: s -> a [int]; "
+        ++ "rec t . a -> b { "
         ++ "split: b -> a { yes: a -> s { buy: end }, no: t }, "
         ++ "cancel: a -> s { no: end } "
         ++ "} } }"
@@ -212,6 +215,50 @@ gGOddEven = GlobalExample
         ++ "} "
         ++ "}"
   , geParticipantNames = ["p", "q", "r"]
+  }
+
+-- | G_map (Monte Carlo running example from this paper)
+gMonteCarloMap :: GlobalExample
+gMonteCarloMap = GlobalExample
+  { geName = "G_mc_map"
+  , geDisplayName = "Monte Carlo Gmap"
+  , geCitation = Nothing
+  , geGlobalSource =
+      "rec t . "
+        ++ "m -> w1 { map: m -> w1 [float]; w1 -> r [float]; "
+        ++ "m -> w2 { map: m -> w2 [float]; w2 -> r [float]; "
+        ++ "r -> m { cont: t, stop: m -> w1 { stop: m -> w2 { stop: end } } } "
+        ++ "} }"
+  , geParticipantNames = ["m", "w1", "w2", "r"]
+  }
+
+-- | G_min (strictly smaller Monte Carlo protocol from this paper)
+gMonteCarloMin :: GlobalExample
+gMonteCarloMin = GlobalExample
+  { geName = "G_mc_min"
+  , geDisplayName = "Monte Carlo Gmin"
+  , geCitation = Nothing
+  , geGlobalSource =
+      "m -> w1 { map: m -> w1 [float]; "
+        ++ "m -> w2 { map: m -> w2 [float]; "
+        ++ "w1 -> r [float]; w2 -> r [float]; "
+        ++ "r -> m { stop: m -> w1 { stop: m -> w2 { stop: end } } } "
+        ++ "} }"
+  , geParticipantNames = ["m", "w1", "w2", "r"]
+  }
+
+-- | Two independent communicating pairs (used in synthesis tests)
+gIndependentPairs :: GlobalExample
+gIndependentPairs = GlobalExample
+  { geName = "G_pairs"
+  , geDisplayName = "Independent Pairs"
+  , geCitation = Nothing
+  , geGlobalSource =
+      "a -> b { "
+        ++ "l1: c -> d { l1: end, l2: end }, "
+        ++ "l2: c -> d { l1: end, l2: end } "
+        ++ "}"
+  , geParticipantNames = ["a", "b", "c", "d"]
   }
 
 
@@ -344,6 +391,9 @@ localExamples =
   , lGItp23
   , lGRing
   , lGOddEven
+  , lMonteCarloMap
+  , lMonteCarloMin
+  , lIndependentPairs
   , lOnlineWallet
   , lAdder
   , lDistLog
@@ -369,8 +419,8 @@ localExamples =
   , mkBinCounter 3
   , mkBinCounter 4
   , mkBinCounter 5
-  -- QBF encoding
-  , mkQBF qbfGame
+  -- QBF encoding (removed from submission)
+  -- , mkQBF qbfGame
   ]
 
 -- | G_tb Recursive Two-Buyer (Example 2 from Less Is More, 2019)
@@ -381,10 +431,10 @@ lTwoBuyers = LocalExample
   , leCitation = Just scalasYoshida2019 { citeRef = Just "Ex.~2" }
   , leParticipants =
       [ ( "a"
-        , "rec t . s ! [string]; s ? [int]; b ! { split: b ? { yes: s ! { buy: end }, no: t }, cancel: s ! { no: end } }"
+        , "s ! { query: s ! [string]; s ? { price: s ? [int]; rec t . b ! { split: b ? { yes: s ! { buy: end }, no: t }, cancel: s ! { no: end } } } }"
         )
       , ( "s"
-        , "rec t . a ? [string]; a ! [int]; a ? { buy: end, no: end }"
+        , "a ? { query: a ? [string]; a ! { price: a ! [int]; a ? { buy: end, no: end } } }"
         )
       , ( "b"
         , "rec t . a ? { cancel: end, split: a ! { no: t, yes: end } }"
@@ -500,8 +550,74 @@ lGOddEven = LocalExample
           ++ "m : rec t2 . p ? { o : r ! { o : r ! { o : t2 } }, b : r ! { b : end } } }"
         )
       , ( "r"
-        , "rec t . q ? { o : q ? { o : t }, b : p ! { o : end, m : end } }"
+        , "q ? { b: p ! { m: end }, o: rec t . q ? { b: p ! { o: end }, o: q ? { b: p ! { m: end }, o: t } } }"
         )
+      ]
+  }
+
+-- | G_map via the inferred Monte Carlo local context from this paper.
+lMonteCarloMap :: LocalExample
+lMonteCarloMap = LocalExample
+  { leName = "G_mc_map"
+  , leDisplayName = "Monte Carlo Gmap"
+  , leCitation = Nothing
+  , leParticipants =
+      [ ( "m"
+        , "rec t . "
+          ++ "w1 ! { map: w1 ! [float]; "
+          ++ "w2 ! { map: w2 ! [float]; "
+          ++ "r ? { cont: t, crash: end, stop: w1 ! { stop: w2 ! { stop: end } } } "
+          ++ "} }"
+        )
+      , ( "w1"
+        , "rec t . m ? { map: m ? [float]; r ! [float]; t, stop: end }"
+        )
+      , ( "w2"
+        , "rec t . m ? { map: m ? [float]; r ! [float]; t, stop: end }"
+        )
+      , ( "r"
+        , "rec t . w1 ? [float]; w2 ? [float]; m ! { cont: t, stop: end }"
+        )
+      ]
+  }
+
+-- | G_min via the Monte Carlo variant whose reducer stops after one round.
+lMonteCarloMin :: LocalExample
+lMonteCarloMin = LocalExample
+  { leName = "G_mc_min"
+  , leDisplayName = "Monte Carlo Gmin"
+  , leCitation = Nothing
+  , leParticipants =
+      [ ( "m"
+        , "rec t . "
+          ++ "w1 ! { map: w1 ! [float]; "
+          ++ "w2 ! { map: w2 ! [float]; "
+          ++ "r ? { cont: t, crash: end, stop: w1 ! { stop: w2 ! { stop: end } } } "
+          ++ "} }"
+        )
+      , ( "w1"
+        , "rec t . m ? { map: m ? [float]; r ! [float]; t, stop: end }"
+        )
+      , ( "w2"
+        , "rec t . m ? { map: m ? [float]; r ! [float]; t, stop: end }"
+        )
+      , ( "r"
+        , "w1 ? [float]; w2 ? [float]; m ! { stop: end }"
+        )
+      ]
+  }
+
+-- | Two independent communicating pairs (used in synthesis tests).
+lIndependentPairs :: LocalExample
+lIndependentPairs = LocalExample
+  { leName = "G_pairs"
+  , leDisplayName = "Independent Pairs"
+  , leCitation = Nothing
+  , leParticipants =
+      [ ("a", "b ! { l1: end, l2: end }")
+      , ("b", "a ? { l1: end, l2: end, l3: end }")
+      , ("c", "d ! { l1: end, l2: end }")
+      , ("d", "c ? { l1: end, l2: end, l3: end }")
       ]
   }
 
